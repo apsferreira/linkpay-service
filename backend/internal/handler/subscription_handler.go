@@ -43,8 +43,20 @@ func NewSubscriptionHandler(service SubscriptionServiceInterface) *SubscriptionH
 
 // --- Admin / Produtor (autenticado) ---
 
-// CreatePlan cria um plano de assinatura para um produto.
-// POST /api/v1/linkpay/products/:id/plans
+// CreatePlan godoc
+//
+//	@Summary      Cria plano de assinatura
+//	@Description  Cria um plano de assinatura recorrente para um produto do tenant autenticado.
+//	@Tags         planos
+//	@Accept       json
+//	@Produce      json
+//	@Security     BearerAuth
+//	@Param        id    path      string                                 true  "ID do produto (UUID)"
+//	@Param        body  body      domain.CreateSubscriptionPlanRequest   true  "Dados do plano"
+//	@Success      201   {object}  domain.DigitalSubscriptionPlan
+//	@Failure      400   {object}  map[string]string
+//	@Failure      401   {object}  map[string]string
+//	@Router       /api/v1/linkpay/products/{id}/plans [post]
 func (h *SubscriptionHandler) CreatePlan(c *fiber.Ctx) error {
 	tenantID, err := extractTenantID(c)
 	if err != nil {
@@ -73,8 +85,18 @@ func (h *SubscriptionHandler) CreatePlan(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(plan)
 }
 
-// ListPlans lista os planos ativos de um produto (público e admin).
-// GET /api/v1/linkpay/products/:id/plans
+// ListPlans godoc
+//
+//	@Summary      Lista planos do produto
+//	@Description  Lista os planos de assinatura ativos de um produto.
+//	@Tags         planos
+//	@Produce      json
+//	@Security     BearerAuth
+//	@Param        id  path      string  true  "ID do produto (UUID)"
+//	@Success      200  {object}  map[string][]domain.DigitalSubscriptionPlan
+//	@Failure      400  {object}  map[string]string
+//	@Failure      500  {object}  map[string]string
+//	@Router       /api/v1/linkpay/products/{id}/plans [get]
 func (h *SubscriptionHandler) ListPlans(c *fiber.Ctx) error {
 	productID := c.Params("id")
 	if productID == "" {
@@ -90,8 +112,21 @@ func (h *SubscriptionHandler) ListPlans(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"plans": plans})
 }
 
-// UpdatePlan atualiza um plano de assinatura.
-// PUT /api/v1/linkpay/plans/:plan_id
+// UpdatePlan godoc
+//
+//	@Summary      Atualiza plano de assinatura
+//	@Description  Atualiza nome, preço, trial ou features de um plano do tenant autenticado.
+//	@Tags         planos
+//	@Accept       json
+//	@Produce      json
+//	@Security     BearerAuth
+//	@Param        id       path      string                               true  "ID do produto (UUID)"
+//	@Param        plan_id  path      string                               true  "ID do plano (UUID)"
+//	@Param        body     body      domain.UpdateSubscriptionPlanRequest  true  "Campos a atualizar"
+//	@Success      200      {object}  domain.DigitalSubscriptionPlan
+//	@Failure      400      {object}  map[string]string
+//	@Failure      401      {object}  map[string]string
+//	@Router       /api/v1/linkpay/products/{id}/plans/{plan_id} [put]
 func (h *SubscriptionHandler) UpdatePlan(c *fiber.Ctx) error {
 	tenantID, err := extractTenantID(c)
 	if err != nil {
@@ -120,8 +155,19 @@ func (h *SubscriptionHandler) UpdatePlan(c *fiber.Ctx) error {
 	return c.JSON(plan)
 }
 
-// DeactivatePlan desativa um plano (soft delete).
-// DELETE /api/v1/linkpay/plans/:plan_id
+// DeactivatePlan godoc
+//
+//	@Summary      Desativa plano de assinatura
+//	@Description  Desativa (soft delete) um plano de assinatura do tenant autenticado.
+//	@Tags         planos
+//	@Produce      json
+//	@Security     BearerAuth
+//	@Param        id       path      string  true  "ID do produto (UUID)"
+//	@Param        plan_id  path      string  true  "ID do plano (UUID)"
+//	@Success      200      {object}  map[string]string
+//	@Failure      400      {object}  map[string]string
+//	@Failure      401      {object}  map[string]string
+//	@Router       /api/v1/linkpay/products/{id}/plans/{plan_id} [delete]
 func (h *SubscriptionHandler) DeactivatePlan(c *fiber.Ctx) error {
 	tenantID, err := extractTenantID(c)
 	if err != nil {
@@ -160,8 +206,18 @@ func (h *SubscriptionHandler) ListAdminSubscriptions(c *fiber.Ctx) error {
 
 // --- Público (assinante) ---
 
-// Subscribe inicia uma assinatura para um plano.
-// POST /api/v1/public/plans/:plan_id/subscribe
+// Subscribe godoc
+//
+//	@Summary      Inicia assinatura
+//	@Description  Cria uma assinatura recorrente no Asaas para um plano de produto.
+//	@Tags         público
+//	@Accept       json
+//	@Produce      json
+//	@Param        id    path      string                    true  "ID do produto (UUID)"
+//	@Param        body  body      domain.SubscribeRequest   true  "Dados do assinante"
+//	@Success      201   {object}  domain.DigitalSubscription
+//	@Failure      400   {object}  map[string]string
+//	@Router       /api/v1/public/products/{id}/subscribe [post]
 func (h *SubscriptionHandler) Subscribe(c *fiber.Ctx) error {
 	planID := c.Params("plan_id")
 	if planID == "" {
@@ -185,8 +241,17 @@ func (h *SubscriptionHandler) Subscribe(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(sub)
 }
 
-// GetSubscriptionStatus retorna o status da assinatura e arquivos disponíveis.
-// GET /api/v1/public/subscriptions/:token
+// GetSubscriptionStatus godoc
+//
+//	@Summary      Status da assinatura
+//	@Description  Retorna o status da assinatura e os arquivos disponíveis para o assinante.
+//	@Tags         público
+//	@Produce      json
+//	@Param        token  path      string  true  "Token da assinatura"
+//	@Success      200    {object}  map[string]interface{}
+//	@Failure      400    {object}  map[string]string
+//	@Failure      404    {object}  map[string]string
+//	@Router       /api/v1/public/subscriptions/{token} [get]
 func (h *SubscriptionHandler) GetSubscriptionStatus(c *fiber.Ctx) error {
 	token := c.Params("token")
 	if token == "" {
@@ -209,8 +274,16 @@ func (h *SubscriptionHandler) GetSubscriptionStatus(c *fiber.Ctx) error {
 	})
 }
 
-// CancelSubscription cancela a assinatura pelo token público.
-// POST /api/v1/public/subscriptions/:token/cancel
+// CancelSubscription godoc
+//
+//	@Summary      Cancela assinatura
+//	@Description  Cancela a assinatura pelo token público do assinante.
+//	@Tags         público
+//	@Produce      json
+//	@Param        token  path      string  true  "Token da assinatura"
+//	@Success      200    {object}  map[string]string
+//	@Failure      400    {object}  map[string]string
+//	@Router       /api/v1/public/subscriptions/{token}/cancel [post]
 func (h *SubscriptionHandler) CancelSubscription(c *fiber.Ctx) error {
 	token := c.Params("token")
 	if token == "" {

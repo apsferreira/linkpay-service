@@ -35,8 +35,16 @@ func NewPayoutHandler(service PayoutServiceInterface) *PayoutHandler {
 }
 
 // GetBalance godoc
-// GET /api/v1/admin/linkpay/balance
-// Retorna saldo disponível, retido e próxima data de repasse do tenant autenticado.
+//
+//	@Summary      Saldo do produtor
+//	@Description  Retorna saldo disponível, retido, em reserva e próxima data de repasse do tenant autenticado.
+//	@Tags         admin
+//	@Produce      json
+//	@Security     BearerAuth
+//	@Success      200  {object}  domain.Balance
+//	@Failure      401  {object}  map[string]string
+//	@Failure      500  {object}  map[string]string
+//	@Router       /api/v1/admin/linkpay/balance [get]
 func (h *PayoutHandler) GetBalance(c *fiber.Ctx) error {
 	tenantID, err := extractTenantID(c)
 	if err != nil {
@@ -53,8 +61,18 @@ func (h *PayoutHandler) GetBalance(c *fiber.Ctx) error {
 }
 
 // ListPayouts godoc
-// GET /api/v1/admin/linkpay/payouts?page=1&limit=20
-// Lista repasses do tenant autenticado com paginação.
+//
+//	@Summary      Lista repasses
+//	@Description  Lista repasses do tenant autenticado com paginação (page, limit).
+//	@Tags         admin
+//	@Produce      json
+//	@Security     BearerAuth
+//	@Param        page   query     int  false  "Página (default 1)"
+//	@Param        limit  query     int  false  "Itens por página, max 100 (default 20)"
+//	@Success      200    {object}  domain.ListPayoutsResponse
+//	@Failure      401    {object}  map[string]string
+//	@Failure      500    {object}  map[string]string
+//	@Router       /api/v1/admin/linkpay/payouts [get]
 func (h *PayoutHandler) ListPayouts(c *fiber.Ctx) error {
 	tenantID, err := extractTenantID(c)
 	if err != nil {
@@ -81,9 +99,19 @@ func (h *PayoutHandler) ListPayouts(c *fiber.Ctx) error {
 }
 
 // RequestPayout godoc
-// POST /api/v1/admin/linkpay/payouts/request
-// Solicita saque manual do saldo disponível.
-// Body: {"pix_key":"...","amount_cents":0} — amount_cents=0 usa saldo total disponível.
+//
+//	@Summary      Solicita saque manual
+//	@Description  Solicita transferência PIX do saldo disponível. amount_cents=0 usa saldo total.
+//	@Tags         admin
+//	@Accept       json
+//	@Produce      json
+//	@Security     BearerAuth
+//	@Param        body  body      domain.PayoutRequestBody  true  "Chave PIX e valor"
+//	@Success      201   {object}  domain.CreatorPayout
+//	@Failure      400   {object}  map[string]string
+//	@Failure      401   {object}  map[string]string
+//	@Failure      422   {object}  map[string]string
+//	@Router       /api/v1/admin/linkpay/payouts/request [post]
 func (h *PayoutHandler) RequestPayout(c *fiber.Ctx) error {
 	tenantID, err := extractTenantID(c)
 	if err != nil {
@@ -108,9 +136,17 @@ func (h *PayoutHandler) RequestPayout(c *fiber.Ctx) error {
 }
 
 // GetAnticipationPreview godoc
-// GET /api/v1/admin/linkpay/anticipation/preview
-// Retorna o preview de antecipação de recebíveis de cartão para o tenant autenticado.
-// 204 se não houver compras elegíveis.
+//
+//	@Summary      Preview de antecipação
+//	@Description  Retorna o preview de antecipação de recebíveis de cartão (taxa 2%, D+2). 204 se não houver elegíveis.
+//	@Tags         admin
+//	@Produce      json
+//	@Security     BearerAuth
+//	@Success      200  {object}  domain.AnticipationPreview
+//	@Success      204
+//	@Failure      401  {object}  map[string]string
+//	@Failure      500  {object}  map[string]string
+//	@Router       /api/v1/admin/linkpay/anticipation/preview [get]
 func (h *PayoutHandler) GetAnticipationPreview(c *fiber.Ctx) error {
 	tenantID, err := extractTenantID(c)
 	if err != nil {
@@ -130,9 +166,19 @@ func (h *PayoutHandler) GetAnticipationPreview(c *fiber.Ctx) error {
 }
 
 // RequestAnticipation godoc
-// POST /api/v1/admin/linkpay/anticipation/request
-// Solicita antecipação de recebíveis de cartão com taxa de 2%, liberação em D+2.
-// Body: {"pix_key":"email@exemplo.com"} — pix_key opcional se já cadastrada no tenant.
+//
+//	@Summary      Solicita antecipação
+//	@Description  Solicita antecipação de recebíveis de cartão com taxa de 2%, liberação em D+2.
+//	@Tags         admin
+//	@Accept       json
+//	@Produce      json
+//	@Security     BearerAuth
+//	@Param        body  body      domain.AnticipationRequestBody  true  "Chave PIX (opcional se já cadastrada)"
+//	@Success      201   {object}  domain.CreatorPayout
+//	@Failure      400   {object}  map[string]string
+//	@Failure      401   {object}  map[string]string
+//	@Failure      422   {object}  map[string]string
+//	@Router       /api/v1/admin/linkpay/anticipation/request [post]
 func (h *PayoutHandler) RequestAnticipation(c *fiber.Ctx) error {
 	tenantID, err := extractTenantID(c)
 	if err != nil {

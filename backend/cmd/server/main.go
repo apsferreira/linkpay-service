@@ -1,3 +1,12 @@
+// @title           LinkPay API
+// @version         1.0
+// @description     Links de pagamento avulso, comissões e splits — Instituto Itinerante de Tecnologia
+// @host            linkpay-service:3020
+// @BasePath        /
+// @securityDefinitions.apikey BearerAuth
+// @in              header
+// @name            Authorization
+// @description     JWT Bearer token — formato: "Bearer <token>"
 package main
 
 import (
@@ -14,7 +23,10 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/jackc/pgx/v5/pgxpool"
-"linkpay-service/internal/handler"
+	fiberswagger "github.com/swaggo/fiber-swagger"
+
+	_ "linkpay-service/docs/swagger"
+	"linkpay-service/internal/handler"
 	"linkpay-service/internal/messaging"
 	"linkpay-service/internal/middleware"
 	"linkpay-service/internal/repository"
@@ -153,6 +165,9 @@ func main() {
 	admin.Post("/payouts/request", payoutHandler.RequestPayout)
 	admin.Get("/anticipation/preview", payoutHandler.GetAnticipationPreview)
 	admin.Post("/anticipation/request", payoutHandler.RequestAnticipation)
+
+	// Swagger UI
+	app.Get("/swagger/*", fiberswagger.WrapHandler)
 
 	// Health
 	app.Get("/health", func(c *fiber.Ctx) error {

@@ -44,8 +44,19 @@ func (h *LinkPayHandler) DownloadAllFilesZip(c *fiber.Ctx) error {
 	return h.DownloadZip(c)
 }
 
-// GetProduct retorna um produto pelo ID para o tenant autenticado.
-// GET /api/v1/linkpay/products/:id
+// GetProduct godoc
+//
+//	@Summary      Retorna produto por ID
+//	@Description  Retorna um produto digital pelo ID para o tenant autenticado.
+//	@Tags         produtos
+//	@Produce      json
+//	@Security     BearerAuth
+//	@Param        id  path      string  true  "ID do produto (UUID)"
+//	@Success      200  {object}  domain.DigitalProduct
+//	@Failure      400  {object}  map[string]string
+//	@Failure      401  {object}  map[string]string
+//	@Failure      404  {object}  map[string]string
+//	@Router       /api/v1/linkpay/products/{id} [get]
 func (h *LinkPayHandler) GetProduct(c *fiber.Ctx) error {
 	tenantID, err := extractTenantID(c)
 	if err != nil {

@@ -79,7 +79,16 @@ func (h *LinkPayHandler) WithSubscriptionService(svc SubscriptionServiceInterfac
 // --- Admin (autenticado) ---
 
 // ListProducts godoc
-// GET /api/v1/linkpay/products
+//
+//	@Summary      Lista produtos do tenant
+//	@Description  Retorna todos os produtos digitais do tenant autenticado.
+//	@Tags         produtos
+//	@Produce      json
+//	@Security     BearerAuth
+//	@Success      200  {object}  map[string][]domain.DigitalProduct
+//	@Failure      401  {object}  map[string]string
+//	@Failure      500  {object}  map[string]string
+//	@Router       /api/v1/linkpay/products [get]
 func (h *LinkPayHandler) ListProducts(c *fiber.Ctx) error {
 	tenantID, err := extractTenantID(c)
 	if err != nil {
@@ -99,7 +108,19 @@ func (h *LinkPayHandler) ListProducts(c *fiber.Ctx) error {
 }
 
 // CreateProduct godoc
-// POST /api/v1/linkpay/products
+//
+//	@Summary      Cria produto digital
+//	@Description  Cria um novo produto digital para o tenant autenticado.
+//	@Tags         produtos
+//	@Accept       json
+//	@Produce      json
+//	@Security     BearerAuth
+//	@Param        body  body      domain.CreateDigitalProductRequest  true  "Dados do produto"
+//	@Success      201   {object}  domain.DigitalProduct
+//	@Failure      400   {object}  map[string]string
+//	@Failure      401   {object}  map[string]string
+//	@Failure      500   {object}  map[string]string
+//	@Router       /api/v1/linkpay/products [post]
 func (h *LinkPayHandler) CreateProduct(c *fiber.Ctx) error {
 	tenantID, err := extractTenantID(c)
 	if err != nil {
@@ -124,7 +145,20 @@ func (h *LinkPayHandler) CreateProduct(c *fiber.Ctx) error {
 }
 
 // UpdateProduct godoc
-// PUT /api/v1/linkpay/products/:id
+//
+//	@Summary      Atualiza produto digital
+//	@Description  Atualiza os dados de um produto do tenant autenticado.
+//	@Tags         produtos
+//	@Accept       json
+//	@Produce      json
+//	@Security     BearerAuth
+//	@Param        id    path      string                              true  "ID do produto (UUID)"
+//	@Param        body  body      domain.UpdateDigitalProductRequest  true  "Campos a atualizar"
+//	@Success      200   {object}  domain.DigitalProduct
+//	@Failure      400   {object}  map[string]string
+//	@Failure      401   {object}  map[string]string
+//	@Failure      500   {object}  map[string]string
+//	@Router       /api/v1/linkpay/products/{id} [put]
 func (h *LinkPayHandler) UpdateProduct(c *fiber.Ctx) error {
 	tenantID, err := extractTenantID(c)
 	if err != nil {
@@ -154,7 +188,18 @@ func (h *LinkPayHandler) UpdateProduct(c *fiber.Ctx) error {
 }
 
 // DeleteProduct godoc
-// DELETE /api/v1/linkpay/products/:id
+//
+//	@Summary      Desativa produto digital
+//	@Description  Desativa (soft delete) um produto do tenant autenticado.
+//	@Tags         produtos
+//	@Produce      json
+//	@Security     BearerAuth
+//	@Param        id  path      string  true  "ID do produto (UUID)"
+//	@Success      200  {object}  map[string]string
+//	@Failure      400  {object}  map[string]string
+//	@Failure      401  {object}  map[string]string
+//	@Failure      500  {object}  map[string]string
+//	@Router       /api/v1/linkpay/products/{id} [delete]
 func (h *LinkPayHandler) DeleteProduct(c *fiber.Ctx) error {
 	tenantID, err := extractTenantID(c)
 	if err != nil {
@@ -174,9 +219,23 @@ func (h *LinkPayHandler) DeleteProduct(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"message": "produto desativado"})
 }
 
-// UploadProductFile faz upload de um arquivo digital para o MinIO.
-// POST /api/v1/linkpay/products/:id/upload
-// Aceita multipart/form-data com campo "file".
+// UploadProductFile godoc
+//
+//	@Summary      Upload de arquivo do produto
+//	@Description  Faz upload de um arquivo digital para o MinIO (multipart/form-data, campo "file"). Máximo 2 GB.
+//	@Tags         produtos
+//	@Accept       mpfd
+//	@Produce      json
+//	@Security     BearerAuth
+//	@Param        id    path      string  true   "ID do produto (UUID)"
+//	@Param        file  formData  file    true   "Arquivo a enviar"
+//	@Success      200   {object}  map[string]interface{}
+//	@Failure      400   {object}  map[string]string
+//	@Failure      401   {object}  map[string]string
+//	@Failure      404   {object}  map[string]string
+//	@Failure      413   {object}  map[string]string
+//	@Failure      503   {object}  map[string]string
+//	@Router       /api/v1/linkpay/products/{id}/upload [post]
 func (h *LinkPayHandler) UploadProductFile(c *fiber.Ctx) error {
 	if !h.minioClient.IsConfigured() {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "armazenamento de arquivos não configurado"})
@@ -252,7 +311,16 @@ func (h *LinkPayHandler) UploadProductFile(c *fiber.Ctx) error {
 // --- Público ---
 
 // GetPublicProduct godoc
-// GET /api/v1/public/products/:slug
+//
+//	@Summary      Retorna produto público por slug
+//	@Description  Retorna os dados públicos de um produto digital pelo slug, incluindo arquivos adicionais.
+//	@Tags         público
+//	@Produce      json
+//	@Param        slug  path      string  true  "Slug do produto"
+//	@Success      200   {object}  domain.DigitalProduct
+//	@Failure      400   {object}  map[string]string
+//	@Failure      404   {object}  map[string]string
+//	@Router       /api/v1/public/products/{slug} [get]
 func (h *LinkPayHandler) GetPublicProduct(c *fiber.Ctx) error {
 	slug := c.Params("slug")
 	if slug == "" {
@@ -279,7 +347,18 @@ func (h *LinkPayHandler) GetPublicProduct(c *fiber.Ctx) error {
 }
 
 // InitiatePurchase godoc
-// POST /api/v1/public/products/:slug/purchase
+//
+//	@Summary      Inicia compra de produto
+//	@Description  Cria uma cobrança no Asaas (PIX ou cartão) para o produto informado.
+//	@Tags         público
+//	@Accept       json
+//	@Produce      json
+//	@Param        slug  path      string                          true  "Slug do produto"
+//	@Param        body  body      domain.InitiatePurchaseRequest  true  "Dados do comprador e método de pagamento"
+//	@Success      201   {object}  domain.DigitalPurchase
+//	@Failure      400   {object}  map[string]string
+//	@Failure      500   {object}  map[string]string
+//	@Router       /api/v1/public/products/{slug}/purchase [post]
 func (h *LinkPayHandler) InitiatePurchase(c *fiber.Ctx) error {
 	slug := c.Params("slug")
 	if slug == "" {
@@ -315,8 +394,19 @@ func (h *LinkPayHandler) validateLinkPayWebhook(rawBody []byte, token string) bo
 	return hmac.Equal([]byte(h.webhookSecret), []byte(token))
 }
 
-// HandleWebhook processa webhook do Asaas para confirmar pagamentos LinkPay.
-// POST /api/v1/linkpay/webhook
+// HandleWebhook godoc
+//
+//	@Summary      Webhook Asaas
+//	@Description  Recebe eventos do Asaas (PAYMENT_CONFIRMED, PAYMENT_RECEIVED, TRANSFER_COMPLETED, etc.). Requer header asaas-access-token.
+//	@Tags         webhook
+//	@Accept       json
+//	@Produce      json
+//	@Param        asaas-access-token  header    string  true  "Token de segurança enviado pelo Asaas"
+//	@Success      200                 {object}  map[string]bool
+//	@Failure      400                 {object}  map[string]string
+//	@Failure      401                 {object}  map[string]string
+//	@Failure      500                 {object}  map[string]string
+//	@Router       /api/v1/linkpay/webhook [post]
 func (h *LinkPayHandler) HandleWebhook(c *fiber.Ctx) error {
 	// VUL-001: validar asaas-access-token antes de qualquer processamento
 	rawBody := c.Body()
@@ -395,8 +485,17 @@ func (h *LinkPayHandler) HandleWebhook(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"received": true})
 }
 
-// GetSalesStats retorna métricas de vendas dos últimos 30 dias para o tenant autenticado.
-// GET /api/v1/admin/linkpay/stats
+// GetSalesStats godoc
+//
+//	@Summary      Estatísticas de vendas
+//	@Description  Retorna métricas de vendas dos últimos 30 dias para o tenant autenticado.
+//	@Tags         admin
+//	@Produce      json
+//	@Security     BearerAuth
+//	@Success      200  {object}  domain.StatsResponse
+//	@Failure      401  {object}  map[string]string
+//	@Failure      500  {object}  map[string]string
+//	@Router       /api/v1/admin/linkpay/stats [get]
 func (h *LinkPayHandler) GetSalesStats(c *fiber.Ctx) error {
 	tenantID, err := extractTenantID(c)
 	if err != nil {
@@ -450,9 +549,23 @@ func (h *LinkPayHandler) Download(c *fiber.Ctx) error {
 
 // --- BKL-1206: múltiplos arquivos por produto ---
 
-// AddProductFile faz upload de um arquivo adicional para um produto.
-// POST /api/v1/linkpay/products/:id/files
-// Multipart/form-data, campo "file".
+// AddProductFile godoc
+//
+//	@Summary      Adiciona arquivo ao produto
+//	@Description  Faz upload de um arquivo adicional (multipart/form-data, campo "file") para o produto. Máximo 2 GB.
+//	@Tags         produtos
+//	@Accept       mpfd
+//	@Produce      json
+//	@Security     BearerAuth
+//	@Param        id    path      string  true  "ID do produto (UUID)"
+//	@Param        file  formData  file    true  "Arquivo a enviar"
+//	@Success      201   {object}  domain.DigitalProductFile
+//	@Failure      400   {object}  map[string]string
+//	@Failure      401   {object}  map[string]string
+//	@Failure      404   {object}  map[string]string
+//	@Failure      413   {object}  map[string]string
+//	@Failure      503   {object}  map[string]string
+//	@Router       /api/v1/linkpay/products/{id}/files [post]
 func (h *LinkPayHandler) AddProductFile(c *fiber.Ctx) error {
 	if !h.minioClient.IsConfigured() {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "armazenamento de arquivos não configurado"})
@@ -518,8 +631,20 @@ func (h *LinkPayHandler) AddProductFile(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(f)
 }
 
-// ListProductFiles lista os arquivos adicionais de um produto.
-// GET /api/v1/linkpay/products/:id/files
+// ListProductFiles godoc
+//
+//	@Summary      Lista arquivos do produto
+//	@Description  Lista todos os arquivos adicionais associados ao produto do tenant autenticado.
+//	@Tags         produtos
+//	@Produce      json
+//	@Security     BearerAuth
+//	@Param        id  path      string  true  "ID do produto (UUID)"
+//	@Success      200  {object}  map[string][]domain.DigitalProductFile
+//	@Failure      400  {object}  map[string]string
+//	@Failure      401  {object}  map[string]string
+//	@Failure      404  {object}  map[string]string
+//	@Failure      500  {object}  map[string]string
+//	@Router       /api/v1/linkpay/products/{id}/files [get]
 func (h *LinkPayHandler) ListProductFiles(c *fiber.Ctx) error {
 	tenantID, err := extractTenantID(c)
 	if err != nil {
@@ -548,8 +673,21 @@ func (h *LinkPayHandler) ListProductFiles(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"files": files})
 }
 
-// DeleteProductFile remove um arquivo adicional de um produto.
-// DELETE /api/v1/linkpay/products/:id/files/:fileId
+// DeleteProductFile godoc
+//
+//	@Summary      Remove arquivo do produto
+//	@Description  Remove um arquivo adicional do produto (banco + MinIO).
+//	@Tags         produtos
+//	@Produce      json
+//	@Security     BearerAuth
+//	@Param        id      path      string  true  "ID do produto (UUID)"
+//	@Param        fileId  path      string  true  "ID do arquivo (UUID)"
+//	@Success      204
+//	@Failure      400  {object}  map[string]string
+//	@Failure      401  {object}  map[string]string
+//	@Failure      404  {object}  map[string]string
+//	@Failure      500  {object}  map[string]string
+//	@Router       /api/v1/linkpay/products/{id}/files/{fileId} [delete]
 func (h *LinkPayHandler) DeleteProductFile(c *fiber.Ctx) error {
 	tenantID, err := extractTenantID(c)
 	if err != nil {
@@ -593,8 +731,20 @@ func (h *LinkPayHandler) DeleteProductFile(c *fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
-// DownloadFile gera presigned URL para download de um arquivo individual pelo comprador.
-// GET /api/v1/public/download/:token/file/:fileId
+// DownloadFile godoc
+//
+//	@Summary      Download de arquivo individual
+//	@Description  Valida o token de compra e redireciona (302) para presigned URL do MinIO. Expira em 15 min.
+//	@Tags         público
+//	@Produce      json
+//	@Param        token   path      string  true  "Token de acesso da compra"
+//	@Param        fileId  path      string  true  "ID do arquivo (UUID)"
+//	@Success      302
+//	@Failure      400  {object}  map[string]string
+//	@Failure      403  {object}  map[string]string
+//	@Failure      404  {object}  map[string]string
+//	@Failure      503  {object}  map[string]string
+//	@Router       /api/v1/public/download/{token}/file/{fileId} [get]
 func (h *LinkPayHandler) DownloadFile(c *fiber.Ctx) error {
 	token := c.Params("token")
 	fileID := c.Params("fileId")
@@ -637,8 +787,19 @@ func (h *LinkPayHandler) DownloadFile(c *fiber.Ctx) error {
 	return c.Redirect(presigned, fiber.StatusFound)
 }
 
-// DownloadZip gera um arquivo ZIP com todos os arquivos do produto e faz streaming para o cliente.
-// GET /api/v1/public/download/:token/zip
+// DownloadZip godoc
+//
+//	@Summary      Download ZIP de todos os arquivos
+//	@Description  Gera e faz streaming de um ZIP com todos os arquivos do produto. Requer pagamento confirmado.
+//	@Tags         público
+//	@Produce      application/zip
+//	@Param        token  path      string  true  "Token de acesso da compra"
+//	@Success      200
+//	@Failure      400  {object}  map[string]string
+//	@Failure      403  {object}  map[string]string
+//	@Failure      404  {object}  map[string]string
+//	@Failure      503  {object}  map[string]string
+//	@Router       /api/v1/public/download/{token}/zip [get]
 func (h *LinkPayHandler) DownloadZip(c *fiber.Ctx) error {
 	token := c.Params("token")
 	if token == "" {
@@ -749,11 +910,20 @@ func (h *LinkPayHandler) DownloadZip(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusOK).SendStream(pr)
 }
 
-// CreateCart cria um carrinho no cart-service com o produto principal e upsells sugeridos.
-// POST /api/v1/public/products/:slug/cart
-// Body: {"add_upsells": true}
-// Response: {"cart_id": "uuid"}
-// BKL-1221.
+// CreateCart godoc
+//
+//	@Summary      Cria carrinho com upsells
+//	@Description  Cria um carrinho no cart-service com o produto principal e, opcionalmente, os upsells sugeridos (BKL-1221).
+//	@Tags         público
+//	@Accept       json
+//	@Produce      json
+//	@Param        slug  path      string                    true  "Slug do produto"
+//	@Param        body  body      domain.CreateCartRequest  true  "Opções do carrinho"
+//	@Success      201   {object}  map[string]string
+//	@Failure      400   {object}  map[string]string
+//	@Failure      404   {object}  map[string]string
+//	@Failure      502   {object}  map[string]string
+//	@Router       /api/v1/public/products/{slug}/cart [post]
 func (h *LinkPayHandler) CreateCart(c *fiber.Ctx) error {
 	slug := c.Params("slug")
 	if slug == "" {
