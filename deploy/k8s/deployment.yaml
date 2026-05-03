@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: linkpay-service
+  namespace: production
+  labels:
+    app: linkpay-service
+    component: backend
+    team: apsferreira
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: linkpay-service
+  template:
+    metadata:
+      labels:
+        app: linkpay-service
+        component: backend
+    spec:
+      containers:
+        - name: backend
+          image: ghcr.io/apsferreira/linkpay-service:main-latest
+          ports:
+            - containerPort: 3020
+              name: http
+          envFrom:
+            - configMapRef:
+                name: linkpay-config
+            - secretRef:
+                name: linkpay-secrets
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3020
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3020
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "50m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"

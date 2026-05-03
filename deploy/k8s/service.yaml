@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: linkpay-service
+  namespace: production
+  labels:
+    app: linkpay-service
+spec:
+  selector:
+    app: linkpay-service
+  ports:
+    - name: http
+      port: 80
+      targetPort: 3020
+  type: ClusterIP
