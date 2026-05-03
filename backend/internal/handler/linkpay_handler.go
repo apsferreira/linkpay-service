@@ -1,0 +1,765 @@
+package handler
+
+import (
+	"archive/zip"
+	"context"
+	"crypto/hmac"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"path/filepath"
+	"time"
+
+	"github.com/go-playground/validator/v10"
+	"github.com/gofiber/fiber/v2"
+	"github.com/google/uuid"
+
+	"linkpay-service/internal/storage"
+	"linkpay-service/internal/domain"
+)
+
+// LinkPayServiceInterface define os métodos do service usados pelo handler.
+type LinkPayServiceInterface interface {
+	CreateProduct(ctx context.Context, tenantID string, req *domain.CreateDigitalProductRequest) (*domain.DigitalProduct, error)
+	GetProductBySlug(ctx context.Context, slug string) (*domain.DigitalProduct, error)
+	GetProductByID(ctx context.Context, id, tenantID string) (*domain.DigitalProduct, error)
+	ListProducts(ctx context.Context, tenantID string) ([]domain.DigitalProduct, error)
+	UpdateProduct(ctx context.Context, id, tenantID string, req *domain.UpdateDigitalProductRequest) (*domain.DigitalProduct, error)
+	UpdateProductStorage(ctx context.Context, id, tenantID, storageKey, storageBucket, fileName string, fileSizeBytes int64, mimeType string) error
+	DeactivateProduct(ctx context.Context, id, tenantID string) error
+	InitiatePurchase(ctx context.Context, slug string, req *domain.InitiatePurchaseRequest) (*domain.DigitalPurchase, error)
+	ProcessPaymentConfirmed(ctx context.Context, chargeID string) error
+	Download(ctx context.Context, token string) (string, error)
+	GetSalesStats(ctx context.Context, tenantID string) (*domain.LinkPayStatsResponse, error)
+	// BKL-1206: múltiplos arquivos por produto
+	AddProductFile(ctx context.Context, f *domain.DigitalProductFile) error
+	ListProductFiles(ctx context.Context, productID string) ([]domain.DigitalProductFile, error)
+	GetProductFile(ctx context.Context, fileID string) (*domain.DigitalProductFile, error)
+	DeleteProductFile(ctx context.Context, fileID, productID string) error
+	GetPurchaseByToken(ctx context.Context, token string) (*domain.DigitalPurchase, error)
+}
+
+// LinkPayHandler gerencia os endpoints do módulo LinkPay.
+type LinkPayHandler struct {
+	service         LinkPayServiceInterface
+	payoutService   PayoutServiceInterface
+	subscriptionSvc SubscriptionServiceInterface // BKL-1208: webhook de assinaturas
+	validator       *validator.Validate
+	webhookSecret   string // VUL-001: secret para validar asaas-access-token no webhook
+	minioClient     *storage.MinIOClient
+}
+
+func NewLinkPayHandler(service LinkPayServiceInterface, webhookSecret string, minioClient *storage.MinIOClient) *LinkPayHandler {
+	return &LinkPayHandler{
+		service:       service,
+		validator:     validator.New(),
+		webhookSecret: webhookSecret,
+		minioClient:   minioClient,
+	}
+}
+
+// WithPayoutService injeta o PayoutService no handler para processar webhooks de transferência.
+func (h *LinkPayHandler) WithPayoutService(svc PayoutServiceInterface) *LinkPayHandler {
+	h.payoutService = svc
+	return h
+}
+
+// WithSubscriptionService injeta o SubscriptionService para processar webhooks de assinatura (BKL-1208).
+func (h *LinkPayHandler) WithSubscriptionService(svc SubscriptionServiceInterface) *LinkPayHandler {
+	h.subscriptionSvc = svc
+	return h
+}
+
+// --- Admin (autenticado) ---
+
+// ListProducts godoc
+// GET /api/v1/linkpay/products
+func (h *LinkPayHandler) ListProducts(c *fiber.Ctx) error {
+	tenantID, err := extractTenantID(c)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "tenant não identificado"})
+	}
+
+	products, err := h.service.ListProducts(c.Context(), tenantID.String())
+	if err != nil {
+		log.Printf("[linkpay] erro ao listar produtos: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "erro ao listar produtos"})
+	}
+
+	if products == nil {
+		products = []domain.DigitalProduct{}
+	}
+	return c.JSON(fiber.Map{"products": products})
+}
+
+// CreateProduct godoc
+// POST /api/v1/linkpay/products
+func (h *LinkPayHandler) CreateProduct(c *fiber.Ctx) error {
+	tenantID, err := extractTenantID(c)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "tenant não identificado"})
+	}
+
+	var req domain.CreateDigitalProductRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "corpo da requisição inválido"})
+	}
+	if err := h.validator.Struct(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "validação falhou", "details": err.Error()})
+	}
+
+	product, err := h.service.CreateProduct(c.Context(), tenantID.String(), &req)
+	if err != nil {
+		log.Printf("[linkpay] erro ao criar produto: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "erro ao criar produto"})
+	}
+
+	return c.Status(fiber.StatusCreated).JSON(product)
+}
+
+// UpdateProduct godoc
+// PUT /api/v1/linkpay/products/:id
+func (h *LinkPayHandler) UpdateProduct(c *fiber.Ctx) error {
+	tenantID, err := extractTenantID(c)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "tenant não identificado"})
+	}
+
+	id := c.Params("id")
+	if id == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "id obrigatório"})
+	}
+
+	var req domain.UpdateDigitalProductRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "corpo da requisição inválido"})
+	}
+	if err := h.validator.Struct(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "validação falhou", "details": err.Error()})
+	}
+
+	product, err := h.service.UpdateProduct(c.Context(), id, tenantID.String(), &req)
+	if err != nil {
+		log.Printf("[linkpay] erro ao atualizar produto: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "erro ao atualizar produto"})
+	}
+
+	return c.JSON(product)
+}
+
+// DeleteProduct godoc
+// DELETE /api/v1/linkpay/products/:id
+func (h *LinkPayHandler) DeleteProduct(c *fiber.Ctx) error {
+	tenantID, err := extractTenantID(c)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "tenant não identificado"})
+	}
+
+	id := c.Params("id")
+	if id == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "id obrigatório"})
+	}
+
+	if err := h.service.DeactivateProduct(c.Context(), id, tenantID.String()); err != nil {
+		log.Printf("[linkpay] erro ao desativar produto: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "erro ao desativar produto"})
+	}
+
+	return c.JSON(fiber.Map{"message": "produto desativado"})
+}
+
+// UploadProductFile faz upload de um arquivo digital para o MinIO.
+// POST /api/v1/linkpay/products/:id/upload
+// Aceita multipart/form-data com campo "file".
+func (h *LinkPayHandler) UploadProductFile(c *fiber.Ctx) error {
+	if !h.minioClient.IsConfigured() {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "armazenamento de arquivos não configurado"})
+	}
+
+	tenantID, err := extractTenantID(c)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "tenant não identificado"})
+	}
+
+	productID := c.Params("id")
+	if productID == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "id do produto obrigatório"})
+	}
+
+	// Valida que o produto pertence ao tenant
+	if _, err := h.service.GetProductByID(c.Context(), productID, tenantID.String()); err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "produto não encontrado"})
+	}
+
+	file, err := c.FormFile("file")
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "campo 'file' obrigatório"})
+	}
+
+	if file.Size > storage.MaxFileSize {
+		return c.Status(fiber.StatusRequestEntityTooLarge).JSON(fiber.Map{"error": "arquivo muito grande: máximo 2GB"})
+	}
+
+	src, err := file.Open()
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "erro ao abrir arquivo"})
+	}
+	defer src.Close()
+
+	// Detecta MIME type via os primeiros 512 bytes
+	buf := make([]byte, 512)
+	n, _ := src.Read(buf)
+	mimeType := http.DetectContentType(buf[:n])
+
+	// Reconstrói o reader com os bytes lidos + restante
+	fullReader := io.MultiReader(
+		newBytesReader(buf[:n]),
+		src,
+	)
+
+	// Gera storage key hierárquica: tenantID/products/productID/uuid.ext
+	ext := filepath.Ext(file.Filename)
+	storageKey := fmt.Sprintf("%s/products/%s/%s%s", tenantID.String(), productID, uuid.New().String(), ext)
+
+	if err := h.minioClient.UploadFile(c.Context(), storage.LinkPayBucket, storageKey, mimeType, fullReader, file.Size); err != nil {
+		log.Printf("[linkpay] erro no upload MinIO: %v", err)
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	if err := h.service.UpdateProductStorage(
+		c.Context(), productID, tenantID.String(),
+		storageKey, storage.LinkPayBucket, file.Filename, file.Size, mimeType,
+	); err != nil {
+		log.Printf("[linkpay] erro ao salvar metadados de storage: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "erro ao salvar metadados do arquivo"})
+	}
+
+	return c.JSON(fiber.Map{
+		"uploaded":         true,
+		"file_name":        file.Filename,
+		"file_size_bytes":  file.Size,
+		"mime_type":        mimeType,
+		"storage_key":      storageKey,
+	})
+}
+
+// --- Público ---
+
+// GetPublicProduct godoc
+// GET /api/v1/public/products/:slug
+func (h *LinkPayHandler) GetPublicProduct(c *fiber.Ctx) error {
+	slug := c.Params("slug")
+	if slug == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "slug obrigatório"})
+	}
+
+	product, err := h.service.GetProductBySlug(c.Context(), slug)
+	if err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "produto não encontrado"})
+	}
+
+	// Omitir file_url da resposta pública
+	product.FileURL = ""
+
+	// BKL-1206: inclui arquivos adicionais do produto na resposta pública
+	files, err := h.service.ListProductFiles(c.Context(), product.ID)
+	if err != nil {
+		log.Printf("[linkpay] aviso: erro ao buscar arquivos do produto %s: %v", product.ID, err)
+	} else {
+		product.Files = files
+	}
+
+	return c.JSON(product)
+}
+
+// InitiatePurchase godoc
+// POST /api/v1/public/products/:slug/purchase
+func (h *LinkPayHandler) InitiatePurchase(c *fiber.Ctx) error {
+	slug := c.Params("slug")
+	if slug == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "slug obrigatório"})
+	}
+
+	var req domain.InitiatePurchaseRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "corpo da requisição inválido"})
+	}
+	if err := h.validator.Struct(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "validação falhou", "details": err.Error()})
+	}
+
+	purchase, err := h.service.InitiatePurchase(c.Context(), slug, &req)
+	if err != nil {
+		log.Printf("[linkpay] erro ao iniciar compra: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "erro ao processar compra"})
+	}
+
+	return c.Status(fiber.StatusCreated).JSON(purchase)
+}
+
+// validateLinkPayWebhook valida o header asaas-access-token usando comparação constant-time.
+// VUL-001: sem validação qualquer requisição poderia acionar ProcessPaymentConfirmed.
+func (h *LinkPayHandler) validateLinkPayWebhook(rawBody []byte, token string) bool {
+	if h.webhookSecret == "" || token == "" {
+		return false
+	}
+	if len(rawBody) == 0 {
+		return false
+	}
+	return hmac.Equal([]byte(h.webhookSecret), []byte(token))
+}
+
+// HandleWebhook processa webhook do Asaas para confirmar pagamentos LinkPay.
+// POST /api/v1/linkpay/webhook
+func (h *LinkPayHandler) HandleWebhook(c *fiber.Ctx) error {
+	// VUL-001: validar asaas-access-token antes de qualquer processamento
+	rawBody := c.Body()
+	authToken := c.Get("asaas-access-token")
+	if authToken == "" {
+		authToken = c.Get("access_token")
+	}
+	if authToken == "" {
+		authToken = c.Query("access_token")
+	}
+
+	if !h.validateLinkPayWebhook(rawBody, authToken) {
+		log.Printf("[linkpay][SECURITY] webhook rejeitado: token inválido | IP: %s", c.IP())
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "token inválido"})
+	}
+
+	var payload struct {
+		Event   string `json:"event"`
+		Payment struct {
+			ID           string `json:"id"`
+			Subscription string `json:"subscription"` // BKL-1208: preenchido se for cobrança de assinatura
+		} `json:"payment"`
+		Subscription struct {
+			ID string `json:"id"` // BKL-1208: presente em SUBSCRIPTION_DELETED
+		} `json:"subscription"`
+		Transfer struct {
+			ID          string `json:"id"`
+			Description string `json:"description"`
+		} `json:"transfer"`
+	}
+	if err := c.BodyParser(&payload); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "payload inválido"})
+	}
+
+	switch payload.Event {
+	case "PAYMENT_CONFIRMED", "PAYMENT_RECEIVED":
+		if payload.Payment.ID == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "payment.id ausente"})
+		}
+		// BKL-1208: se payment.subscription está preenchido, é cobrança de assinatura recorrente
+		if payload.Payment.Subscription != "" && h.subscriptionSvc != nil {
+			if err := h.subscriptionSvc.RenewSubscription(c.Context(), payload.Payment.Subscription); err != nil {
+				log.Printf("[linkpay] erro ao renovar assinatura asaas_id=%s: %v", payload.Payment.Subscription, err)
+			}
+			break
+		}
+		// Compra avulsa — fluxo original
+		if err := h.service.ProcessPaymentConfirmed(c.Context(), payload.Payment.ID); err != nil {
+			log.Printf("[linkpay] erro ao processar webhook: %v", err)
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "erro ao processar evento"})
+		}
+	case "PAYMENT_OVERDUE":
+		// BKL-1208: assinatura inadimplente
+		if h.subscriptionSvc != nil && payload.Payment.Subscription != "" {
+			if err := h.subscriptionSvc.MarkPastDue(c.Context(), payload.Payment.Subscription); err != nil {
+				log.Printf("[linkpay] erro ao marcar past_due asaas_id=%s: %v", payload.Payment.Subscription, err)
+			}
+		}
+	case "SUBSCRIPTION_DELETED":
+		// BKL-1208: assinatura cancelada direto no painel Asaas
+		if h.subscriptionSvc != nil && payload.Subscription.ID != "" {
+			if err := h.subscriptionSvc.CancelSubscriptionByAsaasID(c.Context(), payload.Subscription.ID); err != nil {
+				log.Printf("[linkpay] erro ao cancelar assinatura asaas_id=%s: %v", payload.Subscription.ID, err)
+			}
+		}
+	case "TRANSFER_COMPLETED", "TRANSFER_FAILED":
+		if h.payoutService != nil && payload.Transfer.ID != "" {
+			if err := h.payoutService.HandleTransferWebhook(c.Context(), payload.Event, payload.Transfer.ID, payload.Transfer.Description); err != nil {
+				log.Printf("[linkpay] erro ao processar transfer webhook %s: %v", payload.Transfer.ID, err)
+			}
+		}
+	default:
+		// Eventos não tratados — retornar 200 para o Asaas não retentar
+	}
+
+	return c.JSON(fiber.Map{"received": true})
+}
+
+// GetSalesStats retorna métricas de vendas dos últimos 30 dias para o tenant autenticado.
+// GET /api/v1/admin/linkpay/stats
+func (h *LinkPayHandler) GetSalesStats(c *fiber.Ctx) error {
+	tenantID, err := extractTenantID(c)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "tenant não identificado"})
+	}
+
+	stats, err := h.service.GetSalesStats(c.Context(), tenantID.String())
+	if err != nil {
+		log.Printf("[linkpay] erro ao buscar stats: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "erro ao buscar estatísticas"})
+	}
+
+	return c.JSON(stats)
+}
+
+// Download redireciona para o arquivo do produto após validar o token.
+// GET /api/v1/public/download/:token
+// BKL-1205: se o produto usa MinIO (storage_key preenchido), gera presigned URL temporária (15min).
+// Comportamento legado: redireciona para file_url quando storage_key está vazio.
+func (h *LinkPayHandler) Download(c *fiber.Ctx) error {
+	token := c.Params("token")
+	if token == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "token obrigatório"})
+	}
+
+	// fileOrKey retorna storage_key (se MinIO) ou file_url (legado)
+	fileOrKey, err := h.service.Download(c.Context(), token)
+	if err != nil {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	if fileOrKey == "" {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "arquivo não disponível"})
+	}
+
+	c.Set("Cache-Control", "no-store")
+	c.Set("X-Download-At", time.Now().UTC().Format(time.RFC3339))
+
+	// BKL-1205: storage_key contém "/" e não começa com "http" — gera presigned URL via MinIO.
+	if h.minioClient.IsConfigured() && len(fileOrKey) > 0 && fileOrKey[0] != 'h' {
+		presigned, presignErr := h.minioClient.PresignedURL(c.Context(), storage.LinkPayBucket, fileOrKey)
+		if presignErr != nil {
+			log.Printf("[linkpay] erro ao gerar presigned URL: %v", presignErr)
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "erro ao gerar link de download"})
+		}
+		return c.Redirect(presigned, fiber.StatusFound)
+	}
+
+	return c.Redirect(fileOrKey, fiber.StatusFound)
+}
+
+// --- BKL-1206: múltiplos arquivos por produto ---
+
+// AddProductFile faz upload de um arquivo adicional para um produto.
+// POST /api/v1/linkpay/products/:id/files
+// Multipart/form-data, campo "file".
+func (h *LinkPayHandler) AddProductFile(c *fiber.Ctx) error {
+	if !h.minioClient.IsConfigured() {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "armazenamento de arquivos não configurado"})
+	}
+
+	tenantID, err := extractTenantID(c)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "tenant não identificado"})
+	}
+
+	productID := c.Params("id")
+	if productID == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "id do produto obrigatório"})
+	}
+
+	// Valida que o produto pertence ao tenant
+	if _, err := h.service.GetProductByID(c.Context(), productID, tenantID.String()); err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "produto não encontrado"})
+	}
+
+	file, err := c.FormFile("file")
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "campo 'file' obrigatório"})
+	}
+
+	if file.Size > storage.MaxFileSize {
+		return c.Status(fiber.StatusRequestEntityTooLarge).JSON(fiber.Map{"error": "arquivo muito grande: máximo 2GB"})
+	}
+
+	src, err := file.Open()
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "erro ao abrir arquivo"})
+	}
+	defer src.Close()
+
+	// Detecta MIME type via os primeiros 512 bytes
+	buf := make([]byte, 512)
+	n, _ := src.Read(buf)
+	mimeType := http.DetectContentType(buf[:n])
+
+	fullReader := io.MultiReader(newBytesReader(buf[:n]), src)
+
+	ext := filepath.Ext(file.Filename)
+	storageKey := fmt.Sprintf("%s/products/%s/%s%s", tenantID.String(), productID, uuid.New().String(), ext)
+
+	if err := h.minioClient.UploadFile(c.Context(), storage.LinkPayBucket, storageKey, mimeType, fullReader, file.Size); err != nil {
+		log.Printf("[linkpay] erro no upload MinIO (arquivo adicional): %v", err)
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	f := &domain.DigitalProductFile{
+		ProductID:     productID,
+		StorageKey:    storageKey,
+		FileName:      file.Filename,
+		FileSizeBytes: file.Size,
+		MimeType:      mimeType,
+	}
+	if err := h.service.AddProductFile(c.Context(), f); err != nil {
+		log.Printf("[linkpay] erro ao salvar metadados de arquivo adicional: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "erro ao registrar arquivo"})
+	}
+
+	return c.Status(fiber.StatusCreated).JSON(f)
+}
+
+// ListProductFiles lista os arquivos adicionais de um produto.
+// GET /api/v1/linkpay/products/:id/files
+func (h *LinkPayHandler) ListProductFiles(c *fiber.Ctx) error {
+	tenantID, err := extractTenantID(c)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "tenant não identificado"})
+	}
+
+	productID := c.Params("id")
+	if productID == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "id do produto obrigatório"})
+	}
+
+	// Valida posse do tenant
+	if _, err := h.service.GetProductByID(c.Context(), productID, tenantID.String()); err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "produto não encontrado"})
+	}
+
+	files, err := h.service.ListProductFiles(c.Context(), productID)
+	if err != nil {
+		log.Printf("[linkpay] erro ao listar arquivos do produto %s: %v", productID, err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "erro ao listar arquivos"})
+	}
+
+	if files == nil {
+		files = []domain.DigitalProductFile{}
+	}
+	return c.JSON(fiber.Map{"files": files})
+}
+
+// DeleteProductFile remove um arquivo adicional de um produto.
+// DELETE /api/v1/linkpay/products/:id/files/:fileId
+func (h *LinkPayHandler) DeleteProductFile(c *fiber.Ctx) error {
+	tenantID, err := extractTenantID(c)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "tenant não identificado"})
+	}
+
+	productID := c.Params("id")
+	fileID := c.Params("fileId")
+	if productID == "" || fileID == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "id do produto e id do arquivo obrigatórios"})
+	}
+
+	// Valida posse do tenant
+	if _, err := h.service.GetProductByID(c.Context(), productID, tenantID.String()); err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "produto não encontrado"})
+	}
+
+	// Busca o arquivo para obter storage_key antes de remover do banco
+	file, err := h.service.GetProductFile(c.Context(), fileID)
+	if err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "arquivo não encontrado"})
+	}
+
+	// Valida que o arquivo pertence ao produto
+	if file.ProductID != productID {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "arquivo não encontrado"})
+	}
+
+	// Remove do MinIO — fail-open: loga erro mas não bloqueia a remoção do banco
+	if h.minioClient.IsConfigured() {
+		if delErr := h.minioClient.DeleteFile(c.Context(), storage.LinkPayBucket, file.StorageKey); delErr != nil {
+			log.Printf("[linkpay] aviso: erro ao remover arquivo do MinIO (storage_key=%s): %v", file.StorageKey, delErr)
+		}
+	}
+
+	if err := h.service.DeleteProductFile(c.Context(), fileID, productID); err != nil {
+		log.Printf("[linkpay] erro ao remover arquivo %s do banco: %v", fileID, err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "erro ao remover arquivo"})
+	}
+
+	return c.SendStatus(fiber.StatusNoContent)
+}
+
+// DownloadFile gera presigned URL para download de um arquivo individual pelo comprador.
+// GET /api/v1/public/download/:token/file/:fileId
+func (h *LinkPayHandler) DownloadFile(c *fiber.Ctx) error {
+	token := c.Params("token")
+	fileID := c.Params("fileId")
+	if token == "" || fileID == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "token e fileId obrigatórios"})
+	}
+
+	// Valida token de compra
+	purchase, err := h.service.GetPurchaseByToken(c.Context(), token)
+	if err != nil {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "token inválido"})
+	}
+	if purchase.PaymentStatus != "confirmed" {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "pagamento não confirmado"})
+	}
+	if purchase.AccessExpiresAt != nil && time.Now().After(*purchase.AccessExpiresAt) {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "link de download expirado"})
+	}
+
+	// Busca o arquivo e valida que pertence ao produto da compra
+	file, err := h.service.GetProductFile(c.Context(), fileID)
+	if err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "arquivo não encontrado"})
+	}
+	if file.ProductID != purchase.ProductID {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "arquivo não pertence a este produto"})
+	}
+
+	if !h.minioClient.IsConfigured() {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "armazenamento não configurado"})
+	}
+
+	presigned, err := h.minioClient.PresignedURL(c.Context(), storage.LinkPayBucket, file.StorageKey)
+	if err != nil {
+		log.Printf("[linkpay] erro ao gerar presigned URL para arquivo %s: %v", fileID, err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "erro ao gerar link de download"})
+	}
+
+	c.Set("Cache-Control", "no-store")
+	return c.Redirect(presigned, fiber.StatusFound)
+}
+
+// DownloadZip gera um arquivo ZIP com todos os arquivos do produto e faz streaming para o cliente.
+// GET /api/v1/public/download/:token/zip
+func (h *LinkPayHandler) DownloadZip(c *fiber.Ctx) error {
+	token := c.Params("token")
+	if token == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "token obrigatório"})
+	}
+
+	// Valida token de compra
+	purchase, err := h.service.GetPurchaseByToken(c.Context(), token)
+	if err != nil {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "token inválido"})
+	}
+	if purchase.PaymentStatus != "confirmed" {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "pagamento não confirmado"})
+	}
+	if purchase.AccessExpiresAt != nil && time.Now().After(*purchase.AccessExpiresAt) {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "link de download expirado"})
+	}
+
+	// Busca produto para obter slug (nome do ZIP)
+	product, err := h.service.GetProductByID(c.Context(), purchase.ProductID, purchase.TenantID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "produto não encontrado"})
+	}
+
+	// Lista arquivos adicionais do produto
+	files, err := h.service.ListProductFiles(c.Context(), purchase.ProductID)
+	if err != nil {
+		log.Printf("[linkpay] erro ao listar arquivos para ZIP produto=%s: %v", purchase.ProductID, err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "erro ao preparar download"})
+	}
+
+	if !h.minioClient.IsConfigured() {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "armazenamento não configurado"})
+	}
+
+	// Monta a lista de entradas do ZIP: arquivo principal do produto + arquivos adicionais
+	type zipEntry struct {
+		storageKey string
+		fileName   string
+	}
+	var entries []zipEntry
+	if product.StorageKey != "" {
+		name := product.FileName
+		if name == "" {
+			name = product.Slug + filepath.Ext(product.StorageKey)
+		}
+		entries = append(entries, zipEntry{storageKey: product.StorageKey, fileName: name})
+	}
+	for _, f := range files {
+		entries = append(entries, zipEntry{storageKey: f.StorageKey, fileName: f.FileName})
+	}
+
+	if len(entries) == 0 {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "nenhum arquivo disponível para download"})
+	}
+
+	zipName := fmt.Sprintf("%s.zip", product.Slug)
+	c.Set("Content-Type", "application/zip")
+	c.Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, zipName))
+	c.Set("Cache-Control", "no-store")
+
+	// Streaming via io.Pipe — não acumula em memória
+	pr, pw := io.Pipe()
+
+	go func() {
+		zw := zip.NewWriter(pw)
+		defer func() {
+			if closeErr := zw.Close(); closeErr != nil {
+				log.Printf("[linkpay] erro ao fechar ZIP writer: %v", closeErr)
+			}
+			pw.Close()
+		}()
+
+		httpClient := &http.Client{Timeout: 30 * time.Second}
+
+		for _, entry := range entries {
+			presigned, presignErr := h.minioClient.PresignedURL(c.Context(), storage.LinkPayBucket, entry.storageKey)
+			if presignErr != nil {
+				log.Printf("[linkpay] erro ao gerar presigned URL para ZIP (key=%s): %v", entry.storageKey, presignErr)
+				continue
+			}
+
+			resp, httpErr := httpClient.Get(presigned) //nolint:noctx
+			if httpErr != nil {
+				log.Printf("[linkpay] erro ao baixar arquivo para ZIP (key=%s): %v", entry.storageKey, httpErr)
+				continue
+			}
+
+			w, zipErr := zw.Create(entry.fileName)
+			if zipErr != nil {
+				resp.Body.Close()
+				log.Printf("[linkpay] erro ao criar entrada no ZIP (%s): %v", entry.fileName, zipErr)
+				continue
+			}
+
+			if _, copyErr := io.Copy(w, resp.Body); copyErr != nil {
+				log.Printf("[linkpay] erro ao copiar arquivo para ZIP (%s): %v", entry.fileName, copyErr)
+			}
+			resp.Body.Close()
+		}
+	}()
+
+	// Incrementa download_count (reutiliza Download que já chama IncrementDownload internamente)
+	if _, incErr := h.service.Download(c.Context(), token); incErr != nil {
+		log.Printf("[linkpay] aviso: não foi possível incrementar download_count no ZIP: %v", incErr)
+	}
+
+	return c.Status(fiber.StatusOK).SendStream(pr)
+}
+
+// newBytesReader cria um io.Reader a partir de um slice de bytes.
+// Usado para reconstituir o stream após peek dos primeiros 512 bytes para detecção de MIME.
+func newBytesReader(b []byte) io.Reader {
+	return &bytesReader{data: b}
+}
+
+type bytesReader struct {
+	data []byte
+	pos  int
+}
+
+func (r *bytesReader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.data) {
+		return 0, io.EOF
+	}
+	n := copy(p, r.data[r.pos:])
+	r.pos += n
+	return n, nil
+}
