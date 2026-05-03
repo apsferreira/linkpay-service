@@ -35,6 +35,8 @@ type LinkPayRepoInterface interface {
 	ListProductFiles(ctx context.Context, productID string) ([]domain.DigitalProductFile, error)
 	GetProductFile(ctx context.Context, fileID string) (*domain.DigitalProductFile, error)
 	DeleteProductFile(ctx context.Context, fileID, productID string) error
+	// BKL-1221: upsells
+	GetUpsellsByProductID(ctx context.Context, productID string) ([]domain.UpsellSuggestion, error)
 }
 
 // EmailSender é a interface mínima para envio de email de confirmação de compra.
@@ -357,6 +359,11 @@ func (s *LinkPayService) GetPurchaseByToken(ctx context.Context, token string) (
 	return s.repo.GetPurchaseByToken(ctx, token)
 }
 
+
+// GetUpsellsByProductID retorna os produtos sugeridos como upsell para um produto. BKL-1221.
+func (s *LinkPayService) GetUpsellsByProductID(ctx context.Context, productID string) ([]domain.UpsellSuggestion, error) {
+	return s.repo.GetUpsellsByProductID(ctx, productID)
+}
 
 // generateSecureToken gera um token hexadecimal de 32 bytes (64 chars).
 func generateSecureToken() (string, error) {

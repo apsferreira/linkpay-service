@@ -9,6 +9,37 @@ import (
 	"linkpay-service/pkg/jwt"
 )
 
+// JWTAuth retorna um middleware Fiber que valida tokens JWT usando o JWTService fornecido.
+// Compatível com o padrão de injeção usado em main.go: middleware.JWTAuth(jwt.NewJWTService(secret)).
+func JWTAuth(svc *jwt.JWTService) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		authHeader := c.Get("Authorization")
+		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"error": "authorization header ausente ou inválido",
+			})
+		}
+
+		tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
+		claims, err := svc.Validate(tokenStr)
+		if err != nil {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"error": "token inválido ou expirado",
+			})
+		}
+
+		if id, parseErr := uuid.Parse(claims.Subject); parseErr == nil {
+			c.Locals("customer_id", id)
+		}
+		c.Locals("user_id", claims.Subject)
+		c.Locals("tenant_id", claims.TenantID)
+		c.Locals("email", claims.Email)
+		c.Locals("roles", claims.Roles)
+
+		return c.Next()
+	}
+}
+
 // JWTMiddleware validates JWT tokens
 func JWTMiddleware(jwtSecret string) fiber.Handler {
 	return func(c *fiber.Ctx) error {

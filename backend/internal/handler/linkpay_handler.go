@@ -15,8 +15,9 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 
-	"linkpay-service/internal/storage"
+	"linkpay-service/internal/client"
 	"linkpay-service/internal/domain"
+	"linkpay-service/internal/storage"
 )
 
 // LinkPayServiceInterface define os métodos do service usados pelo handler.
@@ -38,6 +39,8 @@ type LinkPayServiceInterface interface {
 	GetProductFile(ctx context.Context, fileID string) (*domain.DigitalProductFile, error)
 	DeleteProductFile(ctx context.Context, fileID, productID string) error
 	GetPurchaseByToken(ctx context.Context, token string) (*domain.DigitalPurchase, error)
+	// BKL-1221: upsells
+	GetUpsellsByProductID(ctx context.Context, productID string) ([]domain.UpsellSuggestion, error)
 }
 
 // LinkPayHandler gerencia os endpoints do módulo LinkPay.
@@ -45,6 +48,7 @@ type LinkPayHandler struct {
 	service         LinkPayServiceInterface
 	payoutService   PayoutServiceInterface
 	subscriptionSvc SubscriptionServiceInterface // BKL-1208: webhook de assinaturas
+	cartClient      *client.CartClient            // BKL-1221: upsell via cart-service
 	validator       *validator.Validate
 	webhookSecret   string // VUL-001: secret para validar asaas-access-token no webhook
 	minioClient     *storage.MinIOClient
@@ -56,6 +60,7 @@ func NewLinkPayHandler(service LinkPayServiceInterface, webhookSecret string, mi
 		validator:     validator.New(),
 		webhookSecret: webhookSecret,
 		minioClient:   minioClient,
+		cartClient:    client.NewCartClient(), // BKL-1221: lê CART_SERVICE_URL e SERVICE_TOKEN do env
 	}
 }
 
@@ -742,6 +747,76 @@ func (h *LinkPayHandler) DownloadZip(c *fiber.Ctx) error {
 	}
 
 	return c.Status(fiber.StatusOK).SendStream(pr)
+}
+
+// CreateCart cria um carrinho no cart-service com o produto principal e upsells sugeridos.
+// POST /api/v1/public/products/:slug/cart
+// Body: {"add_upsells": true}
+// Response: {"cart_id": "uuid"}
+// BKL-1221.
+func (h *LinkPayHandler) CreateCart(c *fiber.Ctx) error {
+	slug := c.Params("slug")
+	if slug == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "slug obrigatório"})
+	}
+
+	var req domain.CreateCartRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "corpo da requisição inválido"})
+	}
+
+	product, err := h.service.GetProductBySlug(c.Context(), slug)
+	if err != nil || !product.IsActive {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "produto não encontrado"})
+	}
+
+	cart, err := h.cartClient.CreateCart(c.Context(), product.TenantID, "", slug)
+	if err != nil {
+		log.Printf("[linkpay][cart] erro ao criar carrinho para slug=%s: %v", slug, err)
+		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "erro ao criar carrinho"})
+	}
+
+	// Adiciona produto principal ao carrinho
+	mainItem := client.AddItemRequest{
+		ProductType: "digital_product",
+		ProductID:   product.ID,
+		Quantity:    1,
+		Price:       float64(product.PriceCents) / 100.0,
+		Name:        product.Name,
+	}
+	cart, err = h.cartClient.AddItem(c.Context(), cart.ID, mainItem)
+	if err != nil {
+		log.Printf("[linkpay][cart] erro ao adicionar produto principal cart_id=%s: %v", cart.ID, err)
+		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "erro ao adicionar produto ao carrinho"})
+	}
+
+	// Adiciona upsells sugeridos, se solicitado e disponíveis
+	if req.AddUpsells {
+		upsells, upsellErr := h.service.GetUpsellsByProductID(c.Context(), product.ID)
+		if upsellErr != nil {
+			log.Printf("[linkpay][cart] aviso: erro ao buscar upsells produto_id=%s: %v", product.ID, upsellErr)
+		}
+
+		for _, u := range upsells {
+			upsellProduct, upErr := h.service.GetProductByID(c.Context(), u.ProductID, product.TenantID)
+			if upErr != nil || !upsellProduct.IsActive {
+				continue
+			}
+			upsellItem := client.AddItemRequest{
+				ProductType: "digital_product",
+				ProductID:   upsellProduct.ID,
+				Quantity:    1,
+				Price:       float64(upsellProduct.PriceCents) / 100.0,
+				Name:        upsellProduct.Name,
+			}
+			if cart, err = h.cartClient.AddItem(c.Context(), cart.ID, upsellItem); err != nil {
+				log.Printf("[linkpay][cart] aviso: falha ao adicionar upsell product_id=%s cart_id=%s: %v",
+					upsellProduct.ID, cart.ID, err)
+			}
+		}
+	}
+
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"cart_id": cart.ID})
 }
 
 // newBytesReader cria um io.Reader a partir de um slice de bytes.

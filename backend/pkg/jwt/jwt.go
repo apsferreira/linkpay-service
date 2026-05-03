@@ -15,6 +15,21 @@ type Claims struct {
 	Permissions map[string][]string `json:"permissions"`
 }
 
+// JWTService encapsula o secret para validação de tokens JWT.
+type JWTService struct {
+	secret string
+}
+
+// NewJWTService cria um novo JWTService com o secret informado.
+func NewJWTService(secret string) *JWTService {
+	return &JWTService{secret: secret}
+}
+
+// Validate valida um token JWT e retorna as claims.
+func (s *JWTService) Validate(tokenString string) (*Claims, error) {
+	return ValidateToken(tokenString, s.secret)
+}
+
 func ValidateToken(tokenString, secret string) (*Claims, error) {
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(t *jwt.Token) (interface{}, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {

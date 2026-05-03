@@ -1,6 +1,8 @@
 module linkpay-service
 
-go 1.24
+go 1.24.0
+
+toolchain go1.24.13
 
 require (
 	github.com/go-playground/validator/v10 v10.23.0
@@ -10,10 +12,12 @@ require (
 	github.com/jackc/pgx/v5 v5.7.1
 	github.com/minio/minio-go/v7 v7.0.91
 	github.com/rabbitmq/amqp091-go v1.10.0
+	github.com/redis/go-redis/v9 v9.19.0
 )
 
 require (
 	github.com/andybalholm/brotli v1.0.5 // indirect
+	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.3 // indirect
 	github.com/go-ini/ini v1.67.0 // indirect
@@ -35,7 +39,8 @@ require (
 	github.com/rs/xid v1.6.0 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.51.0 // indirect
-	github.com/valyala/tcpliken v1.0.0 // indirect
+	github.com/valyala/tcplisten v1.0.0 // indirect
+	go.uber.org/atomic v1.11.0 // indirect
 	golang.org/x/crypto v0.46.0 // indirect
 	golang.org/x/net v0.48.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect

@@ -176,6 +176,9 @@ type CreateProductRequest struct {
 	DownloadLimit int    `json:"download_limit" validate:"min=1,max=100"`
 }
 
+// CreateDigitalProductRequest é o alias canônico usado pelo handler e service.
+type CreateDigitalProductRequest = CreateProductRequest
+
 type UpdateProductRequest struct {
 	Name          string `json:"name"           validate:"omitempty,max=255"`
 	Description   string `json:"description"    validate:"omitempty,max=5000"`
@@ -185,6 +188,9 @@ type UpdateProductRequest struct {
 	DownloadLimit int    `json:"download_limit" validate:"omitempty,min=1,max=100"`
 	IsActive      *bool  `json:"is_active"`
 }
+
+// UpdateDigitalProductRequest é o alias canônico usado pelo handler e service.
+type UpdateDigitalProductRequest = UpdateProductRequest
 
 type InitiatePurchaseRequest struct {
 	CustomerName  string `json:"customer_name"  validate:"required,max=255"`
@@ -238,11 +244,17 @@ type ProductStats struct {
 	RevenueCents int64  `json:"revenue_cents"`
 }
 
+// LinkPayProductStats é o alias canônico para stats de produto no LinkPay.
+type LinkPayProductStats = ProductStats
+
 type DailyStat struct {
 	Date         string `json:"date"`
 	Sales        int    `json:"sales"`
 	RevenueCents int64  `json:"revenue_cents"`
 }
+
+// LinkPayDailyStat é o alias canônico para stats diárias no LinkPay.
+type LinkPayDailyStat = DailyStat
 
 type StatsResponse struct {
 	Period            string         `json:"period"`
@@ -250,6 +262,20 @@ type StatsResponse struct {
 	TotalSales        int            `json:"total_sales"`
 	Products          []ProductStats `json:"products"`
 	DailySales        []DailyStat    `json:"daily_sales"`
+}
+
+// LinkPayStatsResponse é o alias canônico para a resposta de stats do LinkPay.
+type LinkPayStatsResponse = StatsResponse
+
+// UpsellSuggestion representa um produto sugerido como upsell/cross-sell. BKL-1221.
+type UpsellSuggestion struct {
+	ProductID    string `json:"product_id"    db:"product_id"`
+	DisplayOrder int    `json:"display_order" db:"display_order"`
+}
+
+// CreateCartRequest é o body do endpoint POST /api/v1/public/products/:slug/cart. BKL-1221.
+type CreateCartRequest struct {
+	AddUpsells bool `json:"add_upsells"`
 }
 
 type ListPayoutsResponse struct {

@@ -431,6 +431,38 @@ type scanner interface {
 	Scan(dest ...any) error
 }
 
+// GetUpsellsByProductID retorna os produtos sugeridos como upsell para um produto, ordenados por display_order.
+// BKL-1221.
+func (r *LinkPayRepository) GetUpsellsByProductID(ctx context.Context, productID string) ([]domain.UpsellSuggestion, error) {
+	query := `
+		SELECT upsell_product_id::text, display_order
+		FROM product_upsells
+		WHERE product_id = $1
+		ORDER BY display_order ASC
+	`
+	rows, err := r.db.Query(ctx, query, productID)
+	if err != nil {
+		return nil, fmt.Errorf("GetUpsellsByProductID: %w", err)
+	}
+	defer rows.Close()
+
+	var upsells []domain.UpsellSuggestion
+	for rows.Next() {
+		var u domain.UpsellSuggestion
+		if err := rows.Scan(&u.ProductID, &u.DisplayOrder); err != nil {
+			return nil, fmt.Errorf("GetUpsellsByProductID scan: %w", err)
+		}
+		upsells = append(upsells, u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if upsells == nil {
+		upsells = []domain.UpsellSuggestion{}
+	}
+	return upsells, nil
+}
+
 func scanProduct(row scanner) (*domain.DigitalProduct, error) {
 	var p domain.DigitalProduct
 	err := row.Scan(

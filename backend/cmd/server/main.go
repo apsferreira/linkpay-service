@@ -14,9 +14,7 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/jackc/pgx/v5/pgxpool"
-	amqp "github.com/rabbitmq/amqp091-go"
-
-	"linkpay-service/internal/handler"
+"linkpay-service/internal/handler"
 	"linkpay-service/internal/messaging"
 	"linkpay-service/internal/middleware"
 	"linkpay-service/internal/repository"
@@ -50,58 +48,40 @@ func main() {
 	logger.Info("banco de dados conectado")
 
 	// --- MinIO ---
-	minioEndpoint := mustEnv("MINIO_ENDPOINT")
-	minioKey := mustEnv("MINIO_ACCESS_KEY")
-	minioSecret := mustEnv("MINIO_SECRET_KEY")
-	minioSecure := os.Getenv("MINIO_USE_SSL") == "true"
-	minioClient, err := storage.NewMinIOClient(minioEndpoint, minioKey, minioSecret, minioSecure)
+	minioClient, err := storage.NewMinIOClient()
 	if err != nil {
 		log.Fatalf("init minio: %v", err)
 	}
-	logger.Info("MinIO conectado", "endpoint", minioEndpoint)
+	logger.Info("MinIO conectado")
 
 	// --- RabbitMQ (opcional) ---
 	var publisher *messaging.Publisher
 	if rabbitURL := os.Getenv("RABBITMQ_URL"); rabbitURL != "" {
-		conn, amqpErr := amqp.Dial(rabbitURL)
-		if amqpErr != nil {
-			logger.Warn("RabbitMQ indisponível — continuando sem mensageria", "error", amqpErr)
+		pub, pubErr := messaging.NewPublisher(rabbitURL)
+		if pubErr != nil {
+			logger.Warn("RabbitMQ indisponível — continuando sem mensageria", "error", pubErr)
 		} else {
-			ch, chErr := conn.Channel()
-			if chErr != nil {
-				logger.Warn("falha ao abrir channel RabbitMQ", "error", chErr)
-			} else {
-				publisher = messaging.NewPublisher(ch, logger)
-				logger.Info("RabbitMQ conectado")
-				defer conn.Close()
-			}
+			publisher = pub
+			logger.Info("RabbitMQ conectado")
 		}
 	}
 
 	// --- Repositories ---
 	linkPayRepo := repository.NewLinkPayRepository(db)
 	payoutRepo := repository.NewPayoutRepository(db)
+	subscriptionRepo := repository.NewSubscriptionRepository(db)
 
 	// --- Services ---
 	asaasBaseURL := getEnvOrDefault("ASAAS_BASE_URL", "https://sandbox.asaas.com/api/v3")
 	asaasAPIKey := mustEnv("ASAAS_API_KEY")
-	notificationURL := os.Getenv("NOTIFICATION_SERVICE_URL")
-	notificationToken := os.Getenv("SERVICE_TOKEN")
-	baseURL := getEnvOrDefault("BASE_URL", "https://pay.institutoitinerante.com.br")
 
-	linkPaySvc := service.NewLinkPayService(
-		linkPayRepo,
-		publisher,
-		asaasBaseURL,
-		asaasAPIKey,
-		notificationURL,
-		notificationToken,
-		baseURL,
-	)
+	asaasClient := service.NewAsaasClient(asaasBaseURL, asaasAPIKey, logger)
 
-	payoutSvc := service.NewPayoutService(payoutRepo, asaasBaseURL, asaasAPIKey, logger)
+	linkPaySvc := service.NewLinkPayService(linkPayRepo, asaasClient, publisher, nil)
 
-	subscriptionSvc := service.NewSubscriptionService(linkPayRepo, asaasBaseURL, asaasAPIKey)
+	payoutSvc := service.NewPayoutService(payoutRepo, asaasClient)
+
+	subscriptionSvc := service.NewSubscriptionService(subscriptionRepo, linkPayRepo, asaasClient)
 
 	// --- Handlers ---
 	webhookSecret := os.Getenv("ASAAS_WEBHOOK_SECRET")
@@ -143,9 +123,9 @@ func main() {
 	pub.Get("/download/:token/file/:fileId", linkPayHandler.DownloadProductFile)
 	pub.Get("/download/:token/zip", linkPayHandler.DownloadAllFilesZip)
 	pub.Post("/products/:id/subscribe", subscriptionHandler.Subscribe)
-	pub.Get("/subscriptions/:token", subscriptionHandler.GetSubscription)
-	pub.Get("/subscriber-files", subscriptionHandler.GetSubscriberFiles)
-	pub.Post("/subscriptions/:token/cancel", subscriptionHandler.Cancel)
+	pub.Get("/subscriptions/:token", subscriptionHandler.GetSubscriptionStatus)
+	pub.Post("/subscriptions/:token/cancel", subscriptionHandler.CancelSubscription)
+	pub.Post("/products/:slug/cart", linkPayHandler.CreateCart) // BKL-1221: upsell via cart-service
 
 	// Webhook Asaas
 	app.Post("/api/v1/linkpay/webhook", linkPayHandler.HandleWebhook)
@@ -162,8 +142,8 @@ func main() {
 	auth.Delete("/products/:id/files/:fileId", linkPayHandler.DeleteProductFile)
 	auth.Post("/products/:id/plans", subscriptionHandler.CreatePlan)
 	auth.Get("/products/:id/plans", subscriptionHandler.ListPlans)
-	auth.Put("/products/:id/plans/:planId", subscriptionHandler.UpdatePlan)
-	auth.Delete("/products/:id/plans/:planId", subscriptionHandler.DeletePlan)
+	auth.Put("/products/:id/plans/:plan_id", subscriptionHandler.UpdatePlan)
+	auth.Delete("/products/:id/plans/:plan_id", subscriptionHandler.DeactivatePlan)
 
 	// Admin
 	admin := app.Group("/api/v1/admin/linkpay", authMiddleware)
