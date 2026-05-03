@@ -29,6 +29,7 @@ import (
 	"linkpay-service/internal/handler"
 	"linkpay-service/internal/messaging"
 	"linkpay-service/internal/middleware"
+	"linkpay-service/internal/pkg/pulse"
 	"linkpay-service/internal/repository"
 	"linkpay-service/internal/service"
 	"linkpay-service/internal/storage"
@@ -99,8 +100,11 @@ func main() {
 	webhookSecret := os.Getenv("ASAAS_WEBHOOK_SECRET")
 	jwtSecret := mustEnv("JWT_SECRET")
 
-	linkPayHandler := handler.NewLinkPayHandler(linkPaySvc, webhookSecret, minioClient)
-	payoutHandler := handler.NewPayoutHandler(payoutSvc)
+	// BKL-1252: Pulse client — fire-and-forget, compartilhado entre handlers.
+	pulseClient := pulse.New()
+
+	linkPayHandler := handler.NewLinkPayHandler(linkPaySvc, webhookSecret, minioClient, pulseClient)
+	payoutHandler := handler.NewPayoutHandler(payoutSvc, pulseClient)
 	subscriptionHandler := handler.NewSubscriptionHandler(subscriptionSvc)
 
 	// --- Fiber app ---

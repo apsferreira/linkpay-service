@@ -17,6 +17,7 @@ import (
 
 	"linkpay-service/internal/client"
 	"linkpay-service/internal/domain"
+	"linkpay-service/internal/pkg/pulse"
 	"linkpay-service/internal/storage"
 )
 
@@ -52,15 +53,17 @@ type LinkPayHandler struct {
 	validator       *validator.Validate
 	webhookSecret   string // VUL-001: secret para validar asaas-access-token no webhook
 	minioClient     *storage.MinIOClient
+	pulseClient     *pulse.Client // BKL-1252: tracking fire-and-forget
 }
 
-func NewLinkPayHandler(service LinkPayServiceInterface, webhookSecret string, minioClient *storage.MinIOClient) *LinkPayHandler {
+func NewLinkPayHandler(service LinkPayServiceInterface, webhookSecret string, minioClient *storage.MinIOClient, pulseClient *pulse.Client) *LinkPayHandler {
 	return &LinkPayHandler{
 		service:       service,
 		validator:     validator.New(),
 		webhookSecret: webhookSecret,
 		minioClient:   minioClient,
 		cartClient:    client.NewCartClient(), // BKL-1221: lê CART_SERVICE_URL e SERVICE_TOKEN do env
+		pulseClient:   pulseClient,
 	}
 }
 
@@ -140,6 +143,12 @@ func (h *LinkPayHandler) CreateProduct(c *fiber.Ctx) error {
 		log.Printf("[linkpay] erro ao criar produto: %v", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "erro ao criar produto"})
 	}
+
+	// BKL-1252: Pulse tracking — fire-and-forget.
+	h.pulseClient.Track(c.Context(), "produto.criado", tenantID.String(), map[string]string{
+		"product_id": product.ID,
+		"slug":       product.Slug,
+	})
 
 	return c.Status(fiber.StatusCreated).JSON(product)
 }
@@ -378,6 +387,13 @@ func (h *LinkPayHandler) InitiatePurchase(c *fiber.Ctx) error {
 		log.Printf("[linkpay] erro ao iniciar compra: %v", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "erro ao processar compra"})
 	}
+
+	// BKL-1252: Pulse tracking — fire-and-forget.
+	h.pulseClient.Track(c.Context(), "venda.realizada", purchase.TenantID, map[string]string{
+		"purchase_id": purchase.ID,
+		"product_id":  purchase.ProductID,
+		"slug":        slug,
+	})
 
 	return c.Status(fiber.StatusCreated).JSON(purchase)
 }

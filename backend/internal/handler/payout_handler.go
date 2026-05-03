@@ -9,6 +9,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 
 	"linkpay-service/internal/domain"
+	"linkpay-service/internal/pkg/pulse"
 )
 
 // PayoutServiceInterface define os métodos do service usados pelo handler.
@@ -23,14 +24,16 @@ type PayoutServiceInterface interface {
 
 // PayoutHandler gerencia os endpoints de repasse de produtores.
 type PayoutHandler struct {
-	service   PayoutServiceInterface
-	validator *validator.Validate
+	service     PayoutServiceInterface
+	validator   *validator.Validate
+	pulseClient *pulse.Client // BKL-1252: tracking fire-and-forget
 }
 
-func NewPayoutHandler(service PayoutServiceInterface) *PayoutHandler {
+func NewPayoutHandler(service PayoutServiceInterface, pulseClient *pulse.Client) *PayoutHandler {
 	return &PayoutHandler{
-		service:   service,
-		validator: validator.New(),
+		service:     service,
+		validator:   validator.New(),
+		pulseClient: pulseClient,
 	}
 }
 
@@ -131,6 +134,11 @@ func (h *PayoutHandler) RequestPayout(c *fiber.Ctx) error {
 		log.Printf("[payout] erro no saque manual tenant %s: %v", tenantID, err)
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
+
+	// BKL-1252: Pulse tracking — fire-and-forget.
+	h.pulseClient.Track(context.Background(), "saque.solicitado", tenantID.String(), map[string]string{
+		"payout_id": payout.ID,
+	})
 
 	return c.Status(fiber.StatusCreated).JSON(payout)
 }
