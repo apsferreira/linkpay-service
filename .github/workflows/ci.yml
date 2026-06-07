@@ -12,7 +12,6 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
-    continue-on-error: true
     timeout-minutes: 10
 
     steps:
@@ -55,7 +54,6 @@ jobs:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/linkpay_test?sslmode=disable
         run: go test ./... -timeout 60s
         working-directory: ./backend
-        continue-on-error: true
 
       - name: Cleanup containers
         if: always()
