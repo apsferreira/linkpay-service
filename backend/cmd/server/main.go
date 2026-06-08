@@ -23,6 +23,7 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 	fiberswagger "github.com/swaggo/fiber-swagger"
 
 	_ "linkpay-service/docs/swagger"
@@ -104,6 +105,10 @@ func main() {
 	pulseClient := pulse.New()
 
 	linkPayHandler := handler.NewLinkPayHandler(linkPaySvc, webhookSecret, minioClient, pulseClient)
+	// #8: Redis para idempotência do webhook Asaas — se REDIS_URL inválido, segue sem dedupe.
+	if redisClient := newWebhookRedisClient(ctx, logger); redisClient != nil {
+		linkPayHandler.WithRedis(redisClient)
+	}
 	payoutHandler := handler.NewPayoutHandler(payoutSvc, pulseClient)
 	subscriptionHandler := handler.NewSubscriptionHandler(subscriptionSvc)
 
@@ -178,6 +183,10 @@ func main() {
 		return c.JSON(fiber.Map{"status": "ok", "service": "linkpay-service"})
 	})
 
+	// --- Job diário de repasse (06h BRT) ---
+	// Issue #7: RunDailyPayouts precisa ser disparado todo dia, senão criadores nunca recebem.
+	startDailyPayoutJob(payoutSvc, pulseClient, logger)
+
 	// --- Graceful shutdown ---
 	port := getEnvOrDefault("PORT", "3020")
 	go func() {
@@ -202,9 +211,65 @@ func mustEnv(key string) string {
 	return v
 }
 
+// startDailyPayoutJob agenda RunDailyPayouts para rodar todos os dias às 06h BRT.
+// Em caso de falha, dispara evento Pulse para alertar o time on-call.
+func startDailyPayoutJob(payoutSvc *service.PayoutService, pulseClient *pulse.Client, logger *slog.Logger) {
+	loc, err := time.LoadLocation("America/Sao_Paulo")
+	if err != nil {
+		logger.Error("falha ao carregar fuso America/Sao_Paulo — caindo para UTC", "error", err)
+		loc = time.UTC
+	}
+
+	go func() {
+		for {
+			now := time.Now().In(loc)
+			next := time.Date(now.Year(), now.Month(), now.Day(), 6, 0, 0, 0, loc)
+			if !next.After(now) {
+				next = next.Add(24 * time.Hour)
+			}
+			wait := time.Until(next)
+			logger.Info("payout diário agendado", "proximo_run_brt", next.Format(time.RFC3339), "em", wait.String())
+			time.Sleep(wait)
+
+			runCtx := context.Background()
+			logger.Info("payout diário iniciando")
+			if err := payoutSvc.RunDailyPayouts(runCtx); err != nil {
+				logger.Error("payout diário falhou", "error", err)
+				pulseClient.Track(runCtx, "linkpay.payout.daily.failed", "", map[string]string{
+					"error": err.Error(),
+				})
+				continue
+			}
+			logger.Info("payout diário concluído com sucesso")
+			pulseClient.Track(runCtx, "linkpay.payout.daily.success", "", nil)
+		}
+	}()
+}
+
 func getEnvOrDefault(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
 	}
 	return def
+}
+
+// newWebhookRedisClient cria o cliente Redis para idempotência do webhook Asaas (#8).
+// Retorna nil em caso de URL inválida ou ping falho — o handler segue em fail-open.
+func newWebhookRedisClient(ctx context.Context, logger *slog.Logger) *redis.Client {
+	redisURL := getEnvOrDefault("REDIS_URL", "redis://localhost:6379/0")
+	opts, err := redis.ParseURL(redisURL)
+	if err != nil {
+		logger.Warn("REDIS_URL inválido — webhook seguirá sem idempotência", "error", err)
+		return nil
+	}
+	client := redis.NewClient(opts)
+	pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if err := client.Ping(pingCtx).Err(); err != nil {
+		logger.Warn("Redis indisponível — webhook seguirá sem idempotência", "error", err)
+		_ = client.Close()
+		return nil
+	}
+	logger.Info("Redis conectado (idempotência de webhook)")
+	return client
 }
