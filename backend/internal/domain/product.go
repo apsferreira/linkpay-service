@@ -6,7 +6,7 @@ import (
 )
 
 const (
-	DefaultPlatformCommissionPct = 10 // 10% IIT, criador recebe 90%
+	DefaultPlatformCommissionPct = 30 // 30% IIT, criador recebe 70%
 
 	HoldbackPIXDays    = 2
 	HoldbackBoletoDays = 2
