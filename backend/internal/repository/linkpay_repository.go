@@ -23,7 +23,7 @@ func NewLinkPayRepository(db *pgxpool.Pool) *LinkPayRepository {
 // --- Produtos ---
 
 // CreateProduct insere um novo produto digital.
-// BKL-1117: inclui platform_commission_pct (default 10, negociável até 6,5% para volume).
+// BKL-1117: inclui platform_commission_pct (default 30, conforme CommissionSplit em CONTEXT.md).
 func (r *LinkPayRepository) CreateProduct(ctx context.Context, p *domain.DigitalProduct) error {
 	if p.PlatformCommissionPct == 0 {
 		p.PlatformCommissionPct = domain.DefaultPlatformCommissionPct
