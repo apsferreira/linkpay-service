@@ -122,8 +122,9 @@ func main() {
 	})
 
 	app.Use(recover.New())
+	app.Use(middleware.SecurityHeaders())
 	app.Use(cors.New(cors.Config{
-		AllowOrigins: getEnvOrDefault("CORS_ORIGINS", "*"),
+		AllowOrigins: getEnvOrDefault("CORS_ORIGINS", "http://localhost:5173"),
 		AllowHeaders: "Origin, Content-Type, Accept, Authorization",
 		AllowMethods: "GET, POST, PUT, DELETE, OPTIONS",
 	}))
@@ -131,8 +132,9 @@ func main() {
 	// --- Rotas ---
 	authMiddleware := middleware.JWTAuth(jwt.NewJWTService(jwtSecret))
 
-	// Públicas
-	pub := app.Group("/api/v1/public")
+	// Públicas — rate limit 60 req/min por IP (SEC-012)
+	rl := middleware.NewRateLimiter(60, time.Minute)
+	pub := app.Group("/api/v1/public", rl.Handler())
 	pub.Get("/products/:slug", linkPayHandler.GetPublicProduct)
 	pub.Post("/products/:slug/purchase", linkPayHandler.InitiatePurchase)
 	pub.Get("/download/:token", linkPayHandler.DownloadProduct)
