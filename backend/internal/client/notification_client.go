@@ -51,7 +51,16 @@ func NewNotificationClient() *NotificationClient {
 
 // SendPurchaseConfirmed notifica o notification-service sobre uma compra confirmada.
 // Falha é retornada para que o caller decida se deve logar ou abortar.
-func (c *NotificationClient) SendPurchaseConfirmed(ctx context.Context, payload PurchaseConfirmedPayload) error {
+func (c *NotificationClient) SendPurchaseConfirmed(ctx context.Context, buyerEmail, customerName, productName, downloadURL string, downloadLimit int, purchaseID, productID string) error {
+	payload := PurchaseConfirmedPayload{
+		BuyerEmail:    buyerEmail,
+		CustomerName:  customerName,
+		ProductName:   productName,
+		DownloadURL:   downloadURL,
+		DownloadLimit: downloadLimit,
+		PurchaseID:    purchaseID,
+		ProductID:     productID,
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("notification_client: marshal: %w", err)
