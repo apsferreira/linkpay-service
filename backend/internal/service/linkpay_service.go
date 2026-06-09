@@ -37,6 +37,9 @@ type LinkPayRepoInterface interface {
 	DeleteProductFile(ctx context.Context, fileID, productID string) error
 	// BKL-1221: upsells
 	GetUpsellsByProductID(ctx context.Context, productID string) ([]domain.UpsellSuggestion, error)
+	// BKL-1515: commission ledger
+	InsertCommissionEntry(ctx context.Context, entry *domain.CommissionEntry) error
+	GetCommissionSummary(ctx context.Context, startDate, endDate string) (*domain.CommissionSummaryResponse, error)
 }
 
 // EmailSender é a interface mínima para envio de email de confirmação de compra.
@@ -248,6 +251,11 @@ func (s *LinkPayService) ProcessPaymentConfirmed(ctx context.Context, chargeID s
 
 	log.Printf("[linkpay] compra confirmada: purchase_id=%s product_id=%s", purchase.ID, purchase.ProductID)
 
+	// BKL-1515: registrar no commission ledger para auditoria financeira
+	if ledgerErr := s.RecordCommissionEntry(ctx, purchase); ledgerErr != nil {
+		log.Printf("[linkpay] aviso: falha ao registrar commission ledger (non-fatal): %v", ledgerErr)
+	}
+
 	baseURL := "https://checkout-api.institutoitinerante.com.br"
 	downloadURL := fmt.Sprintf("%s/api/v1/public/download/%s", baseURL, token)
 
@@ -363,6 +371,42 @@ func (s *LinkPayService) GetPurchaseByToken(ctx context.Context, token string) (
 // GetUpsellsByProductID retorna os produtos sugeridos como upsell para um produto. BKL-1221.
 func (s *LinkPayService) GetUpsellsByProductID(ctx context.Context, productID string) ([]domain.UpsellSuggestion, error) {
 	return s.repo.GetUpsellsByProductID(ctx, productID)
+}
+
+// --- Commission Ledger (BKL-1515) ---
+
+// RecordCommissionEntry insere um registro no commission ledger após confirmação de compra.
+func (s *LinkPayService) RecordCommissionEntry(ctx context.Context, purchase *domain.DigitalPurchase) error {
+	product, err := s.repo.GetProductByID(ctx, purchase.ProductID, purchase.TenantID)
+	if err != nil {
+		return fmt.Errorf("erro ao buscar produto para commission ledger: %w", err)
+	}
+
+	commission := product.PlatformCommissionPct
+	if commission <= 0 {
+		commission = domain.DefaultPlatformCommissionPct
+	}
+
+	commissionCents := purchase.AmountCents * commission / 100
+	creatorPayoutCents := purchase.AmountCents - commissionCents
+
+	entry := &domain.CommissionEntry{
+		ID:                 uuid.New().String(),
+		PurchaseID:         purchase.ID,
+		TenantID:           purchase.TenantID,
+		ProductID:          purchase.ProductID,
+		GrossAmountCents:   purchase.AmountCents,
+		CommissionPercent:  float64(commission),
+		CommissionCents:    commissionCents,
+		CreatorPayoutCents: creatorPayoutCents,
+		CreatedAt:          time.Now().UTC(),
+	}
+	return s.repo.InsertCommissionEntry(ctx, entry)
+}
+
+// GetCommissionSummary retorna o resumo de receita do IIT em um período.
+func (s *LinkPayService) GetCommissionSummary(ctx context.Context, startDate, endDate string) (*domain.CommissionSummaryResponse, error) {
+	return s.repo.GetCommissionSummary(ctx, startDate, endDate)
 }
 
 // generateSecureToken gera um token hexadecimal de 32 bytes (64 chars).
