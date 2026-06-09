@@ -195,6 +195,20 @@ func (r *LinkPayRepository) GetPurchaseByToken(ctx context.Context, token string
 	return scanPurchase(row)
 }
 
+// GetPurchaseByID busca uma compra pelo ID.
+func (r *LinkPayRepository) GetPurchaseByID(ctx context.Context, id string) (*domain.DigitalPurchase, error) {
+	query := `
+		SELECT id, product_id, tenant_id, customer_email, customer_name,
+		       COALESCE(customer_cpf, ''), amount_cents, platform_fee_cents, creator_earnings_cents, payment_method, payment_status,
+		       COALESCE(external_charge_id, ''), COALESCE(access_token, ''),
+		       access_expires_at, download_count, created_at
+		FROM digital_purchases
+		WHERE id = $1
+	`
+	row := r.db.QueryRow(ctx, query, id)
+	return scanPurchase(row)
+}
+
 // GetPurchaseByChargeID busca uma compra pelo ID externo de cobrança (Asaas).
 func (r *LinkPayRepository) GetPurchaseByChargeID(ctx context.Context, chargeID string) (*domain.DigitalPurchase, error) {
 	query := `

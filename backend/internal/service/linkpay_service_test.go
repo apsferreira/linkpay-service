@@ -85,6 +85,12 @@ func (m *mockRepo) GetPurchaseByToken(_ context.Context, token string) (*domain.
 	}
 	return nil, errors.New("not found")
 }
+func (m *mockRepo) GetPurchaseByID(_ context.Context, id string) (*domain.DigitalPurchase, error) {
+	if p, ok := m.byID[id]; ok {
+		return p, nil
+	}
+	return nil, errors.New("not found")
+}
 func (m *mockRepo) GetPurchaseByChargeID(_ context.Context, chargeID string) (*domain.DigitalPurchase, error) {
 	if p, ok := m.purchases[chargeID]; ok {
 		return p, nil
