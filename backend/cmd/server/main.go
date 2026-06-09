@@ -131,6 +131,9 @@ func main() {
 	// --- Rotas ---
 	authMiddleware := middleware.JWTAuth(jwt.NewJWTService(jwtSecret))
 
+	// Página pública HTML compartilhável (issue #14)
+	app.Get("/p/:slug", linkPayHandler.RenderPublicProductPage)
+
 	// Públicas
 	pub := app.Group("/api/v1/public")
 	pub.Get("/products/:slug", linkPayHandler.GetPublicProduct)
