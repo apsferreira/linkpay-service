@@ -25,6 +25,7 @@ type LinkPayRepoInterface interface {
 	DeactivateProduct(ctx context.Context, id, tenantID string) error
 	CreatePurchase(ctx context.Context, p *domain.DigitalPurchase) error
 	GetPurchaseByToken(ctx context.Context, token string) (*domain.DigitalPurchase, error)
+	GetPurchaseByID(ctx context.Context, id string) (*domain.DigitalPurchase, error)
 	GetPurchaseByChargeID(ctx context.Context, chargeID string) (*domain.DigitalPurchase, error)
 	UpdatePurchaseStatus(ctx context.Context, id, status, chargeID string) error
 	ConfirmPurchase(ctx context.Context, id, accessToken string, expiresAt time.Time) error
@@ -367,6 +368,48 @@ func (s *LinkPayService) GetPurchaseByToken(ctx context.Context, token string) (
 	return s.repo.GetPurchaseByToken(ctx, token)
 }
 
+// RefundPurchase estorna uma compra confirmada — CDC Art. 49 (direito de arrependimento em até 7 dias).
+func (s *LinkPayService) RefundPurchase(ctx context.Context, purchaseID, accessToken string) error {
+	purchase, err := s.repo.GetPurchaseByID(ctx, purchaseID)
+	if err != nil {
+		return fmt.Errorf("compra não encontrada")
+	}
+
+	// Valida access_token como prova de posse da compra
+	if purchase.AccessToken == "" || purchase.AccessToken != accessToken {
+		return fmt.Errorf("token de acesso inválido")
+	}
+
+	// Valida que a compra está confirmada
+	if purchase.PaymentStatus != "confirmed" {
+		return fmt.Errorf("compra não está confirmada ou já foi reembolsada")
+	}
+
+	// CDC Art. 49: direito de arrependimento em compras online — prazo de 7 dias corridos
+	if time.Since(purchase.CreatedAt) > 7*24*time.Hour {
+		return fmt.Errorf("prazo de arrependimento de 7 dias expirado")
+	}
+
+	// Solicita estorno no Asaas
+	if s.asaasClient != nil {
+		if err := s.asaasClient.RefundPayment(purchase.ExternalChargeID); err != nil {
+			log.Printf("[linkpay] erro ao estornar cobrança asaas_id=%s purchase_id=%s: %v",
+				purchase.ExternalChargeID, purchase.ID, err)
+			return fmt.Errorf("erro ao processar estorno no gateway: %w", err)
+		}
+	}
+
+	// Atualiza status no banco
+	if err := s.repo.UpdatePurchaseStatus(ctx, purchase.ID, "refunded", purchase.ExternalChargeID); err != nil {
+		log.Printf("[linkpay] erro ao atualizar status de reembolso purchase_id=%s: %v", purchase.ID, err)
+		return fmt.Errorf("erro ao atualizar status da compra")
+	}
+
+	log.Printf("[linkpay] compra reembolsada: purchase_id=%s product_id=%s external_charge_id=%s",
+		purchase.ID, purchase.ProductID, purchase.ExternalChargeID)
+
+	return nil
+}
 
 // GetUpsellsByProductID retorna os produtos sugeridos como upsell para um produto. BKL-1221.
 func (s *LinkPayService) GetUpsellsByProductID(ctx context.Context, productID string) ([]domain.UpsellSuggestion, error) {
