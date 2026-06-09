@@ -20,7 +20,7 @@ spec:
     spec:
       containers:
         - name: backend
-          image: ghcr.io/apsferreira/linkpay-service:main-latest
+          image: ghcr.io/apsferreira/linkpay-service:IMAGE_TAG
           ports:
             - containerPort: 3020
               name: http
