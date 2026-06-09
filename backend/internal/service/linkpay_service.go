@@ -285,7 +285,7 @@ func (s *LinkPayService) ProcessPaymentConfirmed(ctx context.Context, chargeID s
 	if s.emailSender != nil {
 		product, prodErr := s.repo.GetProductByID(ctx, purchase.ProductID, purchase.TenantID)
 		if prodErr != nil {
-			log.Printf("[linkpay] não foi possível buscar produto para email fallback: %v", prodErr)
+			log.Printf("[linkpay] falha no fallback de produto (purchase_id=%s): %v", purchase.ID, prodErr)
 			return nil
 		}
 		if emailErr := s.emailSender.SendPurchaseConfirmation(
