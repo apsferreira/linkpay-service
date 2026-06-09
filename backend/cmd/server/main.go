@@ -23,6 +23,7 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 	fiberswagger "github.com/swaggo/fiber-swagger"
 
 	_ "linkpay-service/docs/swagger"
@@ -84,6 +85,18 @@ func main() {
 	payoutRepo := repository.NewPayoutRepository(db)
 	subscriptionRepo := repository.NewSubscriptionRepository(db)
 
+	// --- Redis (distributed lock / rate limit) ---
+	redisURL := os.Getenv("REDIS_URL")
+	if redisURL == "" {
+		redisURL = "redis://localhost:6379/0"
+	}
+	redisOpts, err := redis.ParseURL(redisURL)
+	if err != nil {
+		log.Fatalf("parse redis url: %v", err)
+	}
+	redisClient := redis.NewClient(redisOpts)
+	defer redisClient.Close()
+
 	// --- Services ---
 	asaasBaseURL := getEnvOrDefault("ASAAS_BASE_URL", "https://sandbox.asaas.com/api/v3")
 	asaasAPIKey := mustEnv("ASAAS_API_KEY")
@@ -92,7 +105,7 @@ func main() {
 
 	linkPaySvc := service.NewLinkPayService(linkPayRepo, asaasClient, publisher, nil)
 
-	payoutSvc := service.NewPayoutService(payoutRepo, asaasClient)
+	payoutSvc := service.NewPayoutService(payoutRepo, asaasClient, redisClient)
 
 	subscriptionSvc := service.NewSubscriptionService(subscriptionRepo, linkPayRepo, asaasClient)
 
