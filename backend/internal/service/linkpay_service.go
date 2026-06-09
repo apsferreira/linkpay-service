@@ -265,7 +265,7 @@ func (s *LinkPayService) ProcessPaymentConfirmed(ctx context.Context, chargeID s
 	downloadURL := fmt.Sprintf("%s/api/v1/public/download/%s", baseURL, token)
 
 	// BKL-417: Publica evento para notification-service enviar email pós-compra via RabbitMQ.
-	// Fail-open: se RabbitMQ não configurado ou falhar, tenta envio direto via Resend.
+	// Fail-open: se RabbitMQ não configurado ou falhar, segue para os próximos canais.
 	if s.publisher != nil {
 		evt := messaging.LinkPayPurchaseConfirmedEvent{
 			PurchaseID:    purchase.ID,
@@ -286,7 +286,28 @@ func (s *LinkPayService) ProcessPaymentConfirmed(ctx context.Context, chargeID s
 		}
 	}
 
-	// Fallback: envio direto via Resend quando RabbitMQ não está disponível.
+	// Fallback 1: notifica notification-service diretamente via HTTP.
+	if s.notifClient != nil {
+		product, prodErr := s.repo.GetProductByID(ctx, purchase.ProductID, purchase.TenantID)
+		if prodErr != nil {
+			log.Printf("[linkpay] não foi possível buscar produto para notification-client: %v", prodErr)
+		} else if notifErr := s.notifClient.SendPurchaseConfirmed(
+			ctx,
+			purchase.CustomerEmail,
+			purchase.CustomerName,
+			product.Name,
+			downloadURL,
+			product.DownloadLimit,
+			purchase.ID,
+			purchase.ProductID,
+		); notifErr != nil {
+			log.Printf("[linkpay] falha ao notificar notification-service (non-fatal): %v", notifErr)
+		} else {
+			return nil
+		}
+	}
+
+	// Fallback 2: envio direto via Resend quando RabbitMQ e notification-service não estão disponíveis.
 	if s.emailSender != nil {
 		product, prodErr := s.repo.GetProductByID(ctx, purchase.ProductID, purchase.TenantID)
 		if prodErr != nil {
