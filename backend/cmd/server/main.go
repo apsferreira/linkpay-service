@@ -170,6 +170,9 @@ func main() {
 	admin.Get("/anticipation/preview", payoutHandler.GetAnticipationPreview)
 	admin.Post("/anticipation/request", payoutHandler.RequestAnticipation)
 
+	// BKL-1515: commission ledger — auditoria financeira
+	admin.Get("/commission-summary", linkPayHandler.GetCommissionSummary)
+
 	// Swagger UI
 	app.Get("/swagger/*", fiberswagger.WrapHandler)
 
