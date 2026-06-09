@@ -103,6 +103,15 @@ func (m *MinIOClient) PresignedURL(ctx context.Context, bucket, storageKey strin
 	return u.String(), nil
 }
 
+// GetObject retorna um reader para download direto do objeto do MinIO.
+func (m *MinIOClient) GetObject(ctx context.Context, bucket, storageKey string) (*minio.Object, error) {
+	obj, err := m.client.GetObject(ctx, bucket, storageKey, minio.GetObjectOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("minio: GetObject: %w", err)
+	}
+	return obj, nil
+}
+
 // DeleteFile remove um arquivo do MinIO.
 func (m *MinIOClient) DeleteFile(ctx context.Context, bucket, storageKey string) error {
 	return m.client.RemoveObject(ctx, bucket, storageKey, minio.RemoveObjectOptions{})
