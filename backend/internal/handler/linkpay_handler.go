@@ -40,6 +40,8 @@ type LinkPayServiceInterface interface {
 	GetProductFile(ctx context.Context, fileID string) (*domain.DigitalProductFile, error)
 	DeleteProductFile(ctx context.Context, fileID, productID string) error
 	GetPurchaseByToken(ctx context.Context, token string) (*domain.DigitalPurchase, error)
+	// RefundPurchase estorna uma compra confirmada (CDC Art. 49 — direito de arrependimento em 7 dias).
+	RefundPurchase(ctx context.Context, purchaseID, accessToken string) error
 	// BKL-1221: upsells
 	GetUpsellsByProductID(ctx context.Context, productID string) ([]domain.UpsellSuggestion, error)
 }
@@ -924,6 +926,44 @@ func (h *LinkPayHandler) DownloadZip(c *fiber.Ctx) error {
 	}
 
 	return c.Status(fiber.StatusOK).SendStream(pr)
+}
+
+// RefundPurchase godoc
+//
+//	@Summary      Estorna compra (CDC Art. 49)
+//	@Description  Solicita o estorno de uma compra confirmada dentro do prazo de arrependimento de 7 dias (CDC Art. 49). Autenticado via access_token enviado por email ao comprador.
+//	@Tags         público
+//	@Accept       json
+//	@Produce      json
+//	@Param        id    path      string                     true  "ID da compra (UUID)"
+//	@Param        body  body      RefundPurchaseRequest      true  "Token de acesso da compra"
+//	@Success      200   {object}  map[string]string
+//	@Failure      400   {object}  map[string]string
+//	@Failure      401   {object}  map[string]string
+//	@Failure      500   {object}  map[string]string
+//	@Router       /api/v1/public/purchases/{id}/refund [post]
+func (h *LinkPayHandler) RefundPurchase(c *fiber.Ctx) error {
+	purchaseID := c.Params("id")
+	if purchaseID == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "id da compra obrigatório"})
+	}
+
+	var req struct {
+		AccessToken string `json:"access_token" validate:"required"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "corpo da requisição inválido"})
+	}
+	if req.AccessToken == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "access_token é obrigatório"})
+	}
+
+	if err := h.service.RefundPurchase(c.Context(), purchaseID, req.AccessToken); err != nil {
+		log.Printf("[linkpay] erro no reembolso purchase_id=%s: %v", purchaseID, err)
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.JSON(fiber.Map{"message": "compra reembolsada com sucesso"})
 }
 
 // CreateCart godoc

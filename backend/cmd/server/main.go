@@ -142,6 +142,7 @@ func main() {
 	pub.Get("/subscriptions/:token", subscriptionHandler.GetSubscriptionStatus)
 	pub.Post("/subscriptions/:token/cancel", subscriptionHandler.CancelSubscription)
 	pub.Post("/products/:slug/cart", linkPayHandler.CreateCart) // BKL-1221: upsell via cart-service
+	pub.Post("/purchases/:id/refund", linkPayHandler.RefundPurchase) // CDC Art. 49: direito de arrependimento
 
 	// Webhook Asaas
 	app.Post("/api/v1/linkpay/webhook", linkPayHandler.HandleWebhook)

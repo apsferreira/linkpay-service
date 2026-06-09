@@ -279,6 +279,29 @@ func (c *AsaasClient) CancelSubscription(asaasSubID string) error {
 	return nil
 }
 
+// RefundPayment solicita o estorno de uma cobrança no Asaas.
+// POST /payments/{paymentId}/refund
+func (c *AsaasClient) RefundPayment(paymentID string) error {
+	url := c.baseURL + "/payments/" + paymentID + "/refund"
+	req, err := http.NewRequest(http.MethodPost, url, nil)
+	if err != nil {
+		return fmt.Errorf("asaas RefundPayment: %w", err)
+	}
+	req.Header.Set("access_token", c.apiKey)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("asaas RefundPayment: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("asaas RefundPayment: status=%d body=%s", resp.StatusCode, string(raw))
+	}
+	return nil
+}
+
 // --- Helpers HTTP ---
 
 func (c *AsaasClient) post(path string, body []byte) (*http.Response, error) {
