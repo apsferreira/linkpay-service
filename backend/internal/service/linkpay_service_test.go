@@ -69,6 +69,12 @@ func (m *mockRepo) UpdateProductStorage(_ context.Context, id, tenantID, storage
 	}
 	return nil
 }
+func (m *mockRepo) UpdateProductCover(_ context.Context, id, _ string, coverImageURL string) error {
+	if p, ok := m.products[id]; ok {
+		p.CoverImageURL = coverImageURL
+	}
+	return nil
+}
 func (m *mockRepo) DeactivateProduct(_ context.Context, id, _ string) error {
 	if p, ok := m.products[id]; ok {
 		p.IsActive = false
