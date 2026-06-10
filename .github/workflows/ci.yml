@@ -68,6 +68,16 @@ jobs:
           echo "✅ Coverage ${COVERAGE}% meets threshold"
         working-directory: ./backend
 
+      - name: Check PII (buyer_email) em qualquer logger
+        run: |
+          echo "=== Verificando buyer_email em código Go (qualquer logger) ==="
+          if grep -rn 'buyer_email' --include='*.go' . | grep -v '_test.go'; then
+            echo "FALHA: buyer_email detectado em código Go (não-teste)!"
+            exit 1
+          fi
+          echo "OK: nenhum buyer_email encontrado"
+        working-directory: ./backend
+
       - name: Cleanup containers
         if: always()
         run: docker rm -f pg_test || true
