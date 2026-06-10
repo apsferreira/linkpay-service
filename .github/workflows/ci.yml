@@ -116,8 +116,12 @@ jobs:
       - name: Update image tags
         run: |
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          IMAGE_TAG="sha-${SHORT_SHA}"
           find deploy/ -name "deployment.yaml" -exec \
-            sed -i "s|image: ghcr.io/apsferreira/linkpay-service:.*|image: ghcr.io/apsferreira/linkpay-service:sha-${SHORT_SHA}|" {} \;
+            sed -i \
+              -e "s|IMAGE_TAG|${IMAGE_TAG}|g" \
+              -e "s|image: ghcr.io/apsferreira/linkpay-service:.*|image: ghcr.io/apsferreira/linkpay-service:${IMAGE_TAG}|" \
+              {} \;
 
       - name: Commit updated manifests
         run: |
