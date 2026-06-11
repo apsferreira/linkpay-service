@@ -2,42 +2,83 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/sony/gobreaker"
+
 	"linkpay-service/internal/domain"
+	"linkpay-service/internal/pkg/pulse"
 )
 
-// AsaasClient encapsula as chamadas HTTP à API Asaas (pagamentos, repasses, assinaturas).
+const (
+	httpTimeout    = 10 * time.Second
+	maxRetries     = 3
+	cbInterval     = 30 * time.Second
+	cbTimeout      = 60 * time.Second
+	cbMinFailures  = 5
+)
+
+type retryableError struct {
+	status int
+	body   string
+}
+
+func (e *retryableError) Error() string {
+	return fmt.Sprintf("asaas 5xx: status=%d body=%s", e.status, e.body)
+}
+
 type AsaasClient struct {
 	baseURL    string
 	apiKey     string
 	httpClient *http.Client
+	cb         *gobreaker.CircuitBreaker
+	pulse      *pulse.Client
 	logger     *slog.Logger
 }
 
-// NewAsaasClient cria um AsaasClient configurado com baseURL e apiKey.
-func NewAsaasClient(baseURL, apiKey string, logger *slog.Logger) *AsaasClient {
+func NewAsaasClient(baseURL, apiKey string, logger *slog.Logger, pulseClient *pulse.Client) *AsaasClient {
 	if logger == nil {
 		logger = slog.Default()
 	}
+
+	cb := gobreaker.NewCircuitBreaker(gobreaker.Settings{
+		Name:        "asaas-api",
+		MaxRequests: 1,
+		Interval:    cbInterval,
+		Timeout:     cbTimeout,
+		ReadyToTrip: func(counts gobreaker.Counts) bool {
+			return counts.Requests >= cbMinFailures && counts.TotalFailures >= cbMinFailures
+		},
+		OnStateChange: func(name string, from, to gobreaker.State) {
+			logger.Warn("circuit breaker state change",
+				"from", from.String(),
+				"to", to.String(),
+			)
+		},
+	})
+
 	return &AsaasClient{
 		baseURL: baseURL,
 		apiKey:  apiKey,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: httpTimeout,
 		},
+		cb:     cb,
+		pulse:  pulseClient,
 		logger: logger,
 	}
 }
 
 // --- Tipos internos ---
 
-// AsaasCustomer representa a resposta de criação de customer no Asaas.
 type AsaasCustomer struct {
 	ID    string `json:"id"`
 	Name  string `json:"name"`
@@ -45,7 +86,6 @@ type AsaasCustomer struct {
 	CPF   string `json:"cpfCnpj"`
 }
 
-// AsaasPaymentRequest monta o payload de criação de cobrança avulsa.
 type AsaasPaymentRequest struct {
 	Customer          string  `json:"customer"`
 	BillingType       string  `json:"billingType"`
@@ -55,13 +95,11 @@ type AsaasPaymentRequest struct {
 	ExternalReference string  `json:"externalReference"`
 }
 
-// AsaasPixTransaction contém os dados do QR Code Pix.
 type AsaasPixTransaction struct {
 	EncodedImage string `json:"encodedImage"`
 	Payload      string `json:"payload"`
 }
 
-// AsaasPaymentResponse é a resposta de criação de cobrança.
 type AsaasPaymentResponse struct {
 	ID             string               `json:"id"`
 	Status         string               `json:"status"`
@@ -69,7 +107,6 @@ type AsaasPaymentResponse struct {
 	PixTransaction *AsaasPixTransaction `json:"pixTransaction,omitempty"`
 }
 
-// AsaasTransferRequest monta o payload de criação de transferência (repasse).
 type AsaasTransferRequest struct {
 	Value             float64           `json:"value"`
 	BankAccount       *AsaasBankAccount `json:"bankAccount,omitempty"`
@@ -80,12 +117,10 @@ type AsaasTransferRequest struct {
 	ScheduleDate      string            `json:"scheduleDate,omitempty"`
 }
 
-// DetectPixKeyType infere o tipo de chave Pix a partir do valor informado.
 func DetectPixKeyType(key string) string {
 	if len(key) == 0 {
 		return "EVP"
 	}
-	// CPF/CNPJ — apenas dígitos, 11 ou 14 chars
 	allDigits := true
 	for _, c := range key {
 		if c < '0' || c > '9' {
@@ -101,11 +136,9 @@ func DetectPixKeyType(key string) string {
 			return "CNPJ"
 		}
 	}
-	// Telefone: começa com +
 	if key[0] == '+' {
 		return "PHONE"
 	}
-	// Email: contém @
 	for _, c := range key {
 		if c == '@' {
 			return "EMAIL"
@@ -114,7 +147,6 @@ func DetectPixKeyType(key string) string {
 	return "EVP"
 }
 
-// AsaasBankAccount representa dados bancários para TED.
 type AsaasBankAccount struct {
 	Bank        string `json:"bank"`
 	AccountName string `json:"accountName"`
@@ -124,33 +156,29 @@ type AsaasBankAccount struct {
 	CPF         string `json:"cpfCnpj"`
 }
 
-// AsaasTransferResponse é a resposta de criação de transferência.
 type AsaasTransferResponse struct {
-	ID     string `json:"id"`
-	Status string `json:"status"`
+	ID     string  `json:"id"`
+	Status string  `json:"status"`
 	Value  float64 `json:"value"`
 }
 
-// AsaasSubscriptionRequest monta o payload de criação de assinatura recorrente.
 type AsaasSubscriptionRequest struct {
 	Customer          string  `json:"customer"`
 	BillingType       string  `json:"billingType"`
 	Value             float64 `json:"value"`
 	NextDueDate       string  `json:"nextDueDate"`
-	Cycle             string  `json:"cycle"` // MONTHLY | YEARLY
+	Cycle             string  `json:"cycle"`
 	Description       string  `json:"description,omitempty"`
 	ExternalReference string  `json:"externalReference,omitempty"`
 }
 
-// AsaasSubscriptionResponse é a resposta de criação de assinatura.
 type AsaasSubscriptionResponse struct {
 	ID     string `json:"id"`
 	Status string `json:"status"`
 }
 
-// --- Métodos ---
+// --- Métodos públicos ---
 
-// CreateCustomer cadastra ou atualiza um customer no Asaas.
 func (c *AsaasClient) CreateCustomer(name, email, cpf string) (*AsaasCustomer, error) {
 	payload := map[string]string{
 		"name":     name,
@@ -159,7 +187,9 @@ func (c *AsaasClient) CreateCustomer(name, email, cpf string) (*AsaasCustomer, e
 	}
 	body, _ := json.Marshal(payload)
 
-	resp, err := c.post("/customers", body)
+	resp, err := c.doWithRetry(func() (*http.Response, error) {
+		return c.post("/customers", body)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("asaas CreateCustomer: %w", err)
 	}
@@ -177,11 +207,12 @@ func (c *AsaasClient) CreateCustomer(name, email, cpf string) (*AsaasCustomer, e
 	return &customer, nil
 }
 
-// createRawPayment cria uma cobrança avulsa no Asaas.
 func (c *AsaasClient) createRawPayment(req AsaasPaymentRequest) (*AsaasPaymentResponse, error) {
 	body, _ := json.Marshal(req)
 
-	resp, err := c.post("/payments", body)
+	resp, err := c.doWithRetry(func() (*http.Response, error) {
+		return c.post("/payments", body)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("asaas createRawPayment: %w", err)
 	}
@@ -199,11 +230,12 @@ func (c *AsaasClient) createRawPayment(req AsaasPaymentRequest) (*AsaasPaymentRe
 	return &payment, nil
 }
 
-// CreateTransfer cria um repasse (transferência) no Asaas.
 func (c *AsaasClient) CreateTransfer(req AsaasTransferRequest) (*AsaasTransferResponse, error) {
 	body, _ := json.Marshal(req)
 
-	resp, err := c.post("/transfers", body)
+	resp, err := c.doWithRetry(func() (*http.Response, error) {
+		return c.post("/transfers", body)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("asaas CreateTransfer: %w", err)
 	}
@@ -221,7 +253,6 @@ func (c *AsaasClient) CreateTransfer(req AsaasTransferRequest) (*AsaasTransferRe
 	return &transfer, nil
 }
 
-// createLinkPaySubscription cria uma assinatura recorrente no Asaas para um plano.
 func (c *AsaasClient) createLinkPaySubscription(customerID, externalRef string, plan *domain.DigitalSubscriptionPlan, nextDue time.Time) (*AsaasSubscriptionResponse, error) {
 	cycle := "MONTHLY"
 	if plan.Interval == "yearly" {
@@ -239,7 +270,9 @@ func (c *AsaasClient) createLinkPaySubscription(customerID, externalRef string, 
 	}
 	body, _ := json.Marshal(req)
 
-	resp, err := c.post("/subscriptions", body)
+	resp, err := c.doWithRetry(func() (*http.Response, error) {
+		return c.post("/subscriptions", body)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("asaas createLinkPaySubscription: %w", err)
 	}
@@ -257,16 +290,17 @@ func (c *AsaasClient) createLinkPaySubscription(customerID, externalRef string, 
 	return &sub, nil
 }
 
-// CancelSubscription cancela uma assinatura no Asaas pelo ID externo.
 func (c *AsaasClient) CancelSubscription(asaasSubID string) error {
 	url := c.baseURL + "/subscriptions/" + asaasSubID
-	req, err := http.NewRequest(http.MethodDelete, url, nil)
-	if err != nil {
-		return fmt.Errorf("asaas CancelSubscription: %w", err)
-	}
-	req.Header.Set("access_token", c.apiKey)
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doWithRetry(func() (*http.Response, error) {
+		req, reqErr := http.NewRequest(http.MethodDelete, url, nil)
+		if reqErr != nil {
+			return nil, reqErr
+		}
+		req.Header.Set("access_token", c.apiKey)
+		return c.httpClient.Do(req)
+	})
 	if err != nil {
 		return fmt.Errorf("asaas CancelSubscription: %w", err)
 	}
@@ -290,4 +324,86 @@ func (c *AsaasClient) post(path string, body []byte) (*http.Response, error) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("access_token", c.apiKey)
 	return c.httpClient.Do(req)
+}
+
+func (c *AsaasClient) doWithRetry(reqFn func() (*http.Response, error)) (*http.Response, error) {
+	var lastErr error
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(100*(1<<attempt)) * time.Millisecond
+			time.Sleep(backoff)
+		}
+
+		result, cbErr := c.cb.Execute(func() (interface{}, error) {
+			resp, reqErr := reqFn()
+			if reqErr != nil {
+				return nil, reqErr
+			}
+
+			if resp.StatusCode >= 500 {
+				body, _ := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				return nil, &retryableError{status: resp.StatusCode, body: string(body)}
+			}
+
+			return resp, nil
+		})
+
+		if cbErr == nil {
+			return result.(*http.Response), nil
+		}
+
+		lastErr = cbErr
+
+		var retryErr *retryableError
+		if errors.As(cbErr, &retryErr) {
+			c.logger.Warn("asaas retryable error",
+				"attempt", attempt+1,
+				"max_attempts", maxRetries,
+				"status", retryErr.status,
+			)
+			continue
+		}
+
+		if errors.Is(cbErr, gobreaker.ErrOpenState) {
+			c.logger.Warn("asaas circuit breaker open — fail fast",
+				"attempt", attempt+1,
+			)
+		}
+		break
+	}
+
+	c.trackFailure(lastErr)
+
+	return nil, fmt.Errorf("asaas request failed after %d retries: %w", maxRetries, lastErr)
+}
+
+func (c *AsaasClient) trackFailure(err error) {
+	if c.pulse == nil {
+		return
+	}
+
+	errMsg := err.Error()
+	errType := "unknown"
+	switch {
+	case errors.Is(err, gobreaker.ErrOpenState):
+		errType = "circuit_breaker_open"
+	case strings.Contains(errMsg, "5xx"):
+		errType = "5xx_retries_exhausted"
+	case strings.Contains(errMsg, "timeout") || strings.Contains(errMsg, "deadline exceeded"):
+		errType = "timeout"
+	}
+
+	c.pulse.Track(context.Background(), "asaas.failure", "", map[string]string{
+		"error_type": errType,
+		"error":      truncateString(errMsg, 200),
+	})
+}
+
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }
