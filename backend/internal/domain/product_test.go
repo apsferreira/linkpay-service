@@ -13,11 +13,11 @@ func TestCreatorEarningsCents(t *testing.T) {
 		wantFee     int
 	}{
 		{
-			name:        "comissão padrão 10%",
+			name:        "comissão padrão 30%",
 			commission:  0, // usa DefaultPlatformCommissionPct
 			priceCents:  10000,
-			wantEarning: 9000,
-			wantFee:     1000,
+			wantEarning: 7000,
+			wantFee:     3000,
 		},
 		{
 			name:        "comissão explícita 10%",
@@ -41,11 +41,11 @@ func TestCreatorEarningsCents(t *testing.T) {
 			wantFee:     10,
 		},
 		{
-			name:        "comissão negativa usa padrão",
+			name:        "comissão negativa usa padrão 30%",
 			commission:  -5,
 			priceCents:  10000,
-			wantEarning: 9000,
-			wantFee:     1000,
+			wantEarning: 7000,
+			wantFee:     3000,
 		},
 	}
 
