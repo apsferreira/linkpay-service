@@ -8,12 +8,14 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/go-playground/validator/v10"
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 
 	"linkpay-service/internal/client"
 	"linkpay-service/internal/domain"
@@ -56,6 +58,7 @@ type LinkPayHandler struct {
 	webhookSecret   string // VUL-001: secret para validar asaas-access-token no webhook
 	minioClient     *storage.MinIOClient
 	pulseClient     *pulse.Client // BKL-1252: tracking fire-and-forget
+	redisClient     *redis.Client // #8: idempotência de webhook via SetNX
 }
 
 func NewLinkPayHandler(service LinkPayServiceInterface, webhookSecret string, minioClient *storage.MinIOClient, pulseClient *pulse.Client) *LinkPayHandler {
@@ -66,6 +69,7 @@ func NewLinkPayHandler(service LinkPayServiceInterface, webhookSecret string, mi
 		minioClient:   minioClient,
 		cartClient:    client.NewCartClient(), // BKL-1221: lê CART_SERVICE_URL e SERVICE_TOKEN do env
 		pulseClient:   pulseClient,
+		redisClient:   newWebhookRedisClient(), // #8: idempotência de webhook
 	}
 }
 
@@ -489,6 +493,26 @@ func (h *LinkPayHandler) InitiatePurchase(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(purchase)
 }
 
+// newWebhookRedisClient cria um cliente Redis para idempotência de webhook (#8).
+// Retorna nil se REDIS_URL não estiver configurada ou for inválida (fail-open).
+func newWebhookRedisClient() *redis.Client {
+	redisURL := os.Getenv("REDIS_URL")
+	if redisURL == "" {
+		return nil
+	}
+	opts, err := redis.ParseURL(redisURL)
+	if err != nil {
+		log.Printf("[linkpay] WARN: REDIS_URL inválida (%s): %v — idempotência de webhook desabilitada", redisURL, err)
+		return nil
+	}
+	return redis.NewClient(opts)
+}
+
+// setWebhookRedisClient injeta um cliente Redis para testes de idempotência de webhook.
+func (h *LinkPayHandler) setWebhookRedisClient(client *redis.Client) {
+	h.redisClient = client
+}
+
 // validateLinkPayWebhook valida o header asaas-access-token usando comparação constant-time.
 // VUL-001: sem validação qualquer requisição poderia acionar ProcessPaymentConfirmed.
 func (h *LinkPayHandler) validateLinkPayWebhook(rawBody []byte, token string) bool {
@@ -552,6 +576,17 @@ func (h *LinkPayHandler) HandleWebhook(c *fiber.Ctx) error {
 	case "PAYMENT_CONFIRMED", "PAYMENT_RECEIVED":
 		if payload.Payment.ID == "" {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "payment.id ausente"})
+		}
+		// #8: idempotência via Redis SetNX com TTL de 7 dias (janela de retry do Asaas)
+		if h.redisClient != nil {
+			key := fmt.Sprintf("webhook:linkpay:%s", payload.Payment.ID)
+			ok, err := h.redisClient.SetNX(c.Context(), key, "1", 7*24*time.Hour).Result()
+			if err != nil {
+				log.Printf("[linkpay] aviso: Redis indisponível para idempotência: %v", err)
+			} else if !ok {
+				log.Printf("[linkpay] webhook duplicado ignorado (idempotente): chargeID=%s", payload.Payment.ID)
+				return c.JSON(fiber.Map{"received": true, "idempotent": true})
+			}
 		}
 		// BKL-1208: se payment.subscription está preenchido, é cobrança de assinatura recorrente
 		if payload.Payment.Subscription != "" && h.subscriptionSvc != nil {
