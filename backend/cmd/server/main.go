@@ -154,6 +154,7 @@ func main() {
 	auth.Put("/products/:id", linkPayHandler.UpdateProduct)
 	auth.Delete("/products/:id", linkPayHandler.DeactivateProduct)
 	auth.Post("/products/:id/upload", linkPayHandler.UploadProductFile)
+	auth.Post("/products/:id/cover", linkPayHandler.UploadProductCover)
 	auth.Get("/products/:id/files", linkPayHandler.ListProductFiles)
 	auth.Delete("/products/:id/files/:fileId", linkPayHandler.DeleteProductFile)
 	auth.Post("/products/:id/plans", subscriptionHandler.CreatePlan)

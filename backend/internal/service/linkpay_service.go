@@ -37,6 +37,8 @@ type LinkPayRepoInterface interface {
 	DeleteProductFile(ctx context.Context, fileID, productID string) error
 	// BKL-1221: upsells
 	GetUpsellsByProductID(ctx context.Context, productID string) ([]domain.UpsellSuggestion, error)
+	// #16: cover image
+	UpdateProductCover(ctx context.Context, id, tenantID, coverImageURL string) error
 }
 
 // EmailSender é a interface mínima para envio de email de confirmação de compra.
@@ -142,6 +144,12 @@ func (s *LinkPayService) GetProductByID(ctx context.Context, id, tenantID string
 // BKL-1205: atualiza storage_key, storage_bucket, file_name, file_size_bytes, mime_type.
 func (s *LinkPayService) UpdateProductStorage(ctx context.Context, id, tenantID, storageKey, storageBucket, fileName string, fileSizeBytes int64, mimeType string) error {
 	return s.repo.UpdateProductStorage(ctx, id, tenantID, storageKey, storageBucket, fileName, fileSizeBytes, mimeType)
+}
+
+// UpdateProductCover persiste a URL da imagem de capa do produto.
+// #16: chamado após upload bem-sucedido da cover image.
+func (s *LinkPayService) UpdateProductCover(ctx context.Context, id, tenantID, coverImageURL string) error {
+	return s.repo.UpdateProductCover(ctx, id, tenantID, coverImageURL)
 }
 
 func (s *LinkPayService) DeactivateProduct(ctx context.Context, id, tenantID string) error {

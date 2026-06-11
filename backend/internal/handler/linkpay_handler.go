@@ -42,6 +42,8 @@ type LinkPayServiceInterface interface {
 	GetPurchaseByToken(ctx context.Context, token string) (*domain.DigitalPurchase, error)
 	// BKL-1221: upsells
 	GetUpsellsByProductID(ctx context.Context, productID string) ([]domain.UpsellSuggestion, error)
+	// #16: cover image
+	UpdateProductCover(ctx context.Context, id, tenantID, coverImageURL string) error
 }
 
 // LinkPayHandler gerencia os endpoints do módulo LinkPay.
@@ -314,6 +316,95 @@ func (h *LinkPayHandler) UploadProductFile(c *fiber.Ctx) error {
 		"file_size_bytes":  file.Size,
 		"mime_type":        mimeType,
 		"storage_key":      storageKey,
+	})
+}
+
+// UploadProductCover godoc
+//
+//	@Summary      Upload de imagem de capa do produto
+//	@Description  Faz upload da imagem de capa para o MinIO (multipart/form-data, campo "cover").
+//	@Tags         produtos
+//	@Accept       mpfd
+//	@Produce      json
+//	@Security     BearerAuth
+//	@Param        id     path      string  true  "ID do produto (UUID)"
+//	@Param        cover  formData  file    true  "Imagem de capa (JPEG, PNG, GIF)"
+//	@Success      200    {object}  map[string]interface{}
+//	@Failure      400    {object}  map[string]string
+//	@Failure      401    {object}  map[string]string
+//	@Failure      404    {object}  map[string]string
+//	@Failure      503    {object}  map[string]string
+//	@Router       /api/v1/linkpay/products/{id}/cover [post]
+func (h *LinkPayHandler) UploadProductCover(c *fiber.Ctx) error {
+	if !h.minioClient.IsConfigured() {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "armazenamento de arquivos não configurado"})
+	}
+
+	tenantID, err := extractTenantID(c)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "tenant não identificado"})
+	}
+
+	productID := c.Params("id")
+	if productID == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "id do produto obrigatório"})
+	}
+
+	// Valida que o produto pertence ao tenant
+	if _, err := h.service.GetProductByID(c.Context(), productID, tenantID.String()); err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "produto não encontrado"})
+	}
+
+	file, err := c.FormFile("cover")
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "campo 'cover' obrigatório"})
+	}
+
+	if file.Size > 10*1024*1024 {
+		return c.Status(fiber.StatusRequestEntityTooLarge).JSON(fiber.Map{"error": "imagem muito grande: máximo 10MB"})
+	}
+
+	src, err := file.Open()
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "erro ao abrir arquivo"})
+	}
+	defer src.Close()
+
+	// Detecta MIME type via os primeiros 512 bytes
+	buf := make([]byte, 512)
+	n, _ := src.Read(buf)
+	mimeType := http.DetectContentType(buf[:n])
+
+	// Aceita apenas imagens
+	if mimeType != "image/jpeg" && mimeType != "image/png" && mimeType != "image/gif" && mimeType != "image/webp" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "apenas imagens JPEG, PNG, GIF e WebP são permitidas"})
+	}
+
+	fullReader := io.MultiReader(newBytesReader(buf[:n]), src)
+
+	ext := filepath.Ext(file.Filename)
+	storageKey := fmt.Sprintf("%s/products/%s/cover%s", tenantID.String(), productID, ext)
+
+	if err := h.minioClient.UploadFile(c.Context(), storage.LinkPayBucket, storageKey, mimeType, fullReader, file.Size); err != nil {
+		log.Printf("[linkpay] erro no upload da cover image: %v", err)
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	// Gera presigned URL para servir como cover_image_url
+	coverImageURL, err := h.minioClient.PresignedURL(c.Context(), storage.LinkPayBucket, storageKey)
+	if err != nil {
+		log.Printf("[linkpay] erro ao gerar presigned URL da cover: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "erro ao gerar link da imagem"})
+	}
+
+	if err := h.service.UpdateProductCover(c.Context(), productID, tenantID.String(), coverImageURL); err != nil {
+		log.Printf("[linkpay] erro ao salvar cover_image_url: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "erro ao salvar imagem de capa"})
+	}
+
+	return c.JSON(fiber.Map{
+		"uploaded":        true,
+		"cover_image_url": coverImageURL,
 	})
 }
 
