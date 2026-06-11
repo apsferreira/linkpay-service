@@ -85,11 +85,14 @@ func main() {
 	payoutRepo := repository.NewPayoutRepository(db)
 	subscriptionRepo := repository.NewSubscriptionRepository(db)
 
+	// --- Pulse (métricas fire-and-forget) — antes do AsaasClient pois é injetado nele ---
+	pulseClient := pulse.New()
+
 	// --- Services ---
 	asaasBaseURL := getEnvOrDefault("ASAAS_BASE_URL", "https://sandbox.asaas.com/api/v3")
 	asaasAPIKey := mustEnv("ASAAS_API_KEY")
 
-	asaasClient := service.NewAsaasClient(asaasBaseURL, asaasAPIKey, logger)
+	asaasClient := service.NewAsaasClient(asaasBaseURL, asaasAPIKey, logger, pulseClient)
 
 	linkPaySvc := service.NewLinkPayService(linkPayRepo, asaasClient, publisher, nil)
 
@@ -101,8 +104,7 @@ func main() {
 	webhookSecret := os.Getenv("ASAAS_WEBHOOK_SECRET")
 	jwtSecret := mustEnv("JWT_SECRET")
 
-	// BKL-1252: Pulse client — fire-and-forget, compartilhado entre handlers.
-	pulseClient := pulse.New()
+	// BKL-1252: Pulse client — fire-and-forget, compartilhado entre handlers e AsaasClient.
 
 	linkPayHandler := handler.NewLinkPayHandler(linkPaySvc, webhookSecret, minioClient, pulseClient)
 	// #8: Redis para idempotência do webhook Asaas — se REDIS_URL inválido, segue sem dedupe.
