@@ -31,12 +31,12 @@ func (r *LinkPayRepository) CreateProduct(ctx context.Context, p *domain.Digital
 	query := `
 		INSERT INTO digital_products
 			(id, tenant_id, slug, name, description, price_cents, currency, product_type,
-			 file_url, download_limit, is_active, platform_commission_pct, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+			 file_url, cover_image_url, download_limit, is_active, platform_commission_pct, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 	`
 	_, err := r.db.Exec(ctx, query,
 		p.ID, p.TenantID, p.Slug, p.Name, p.Description, p.PriceCents, p.Currency,
-		p.ProductType, p.FileURL, p.DownloadLimit, p.IsActive, p.PlatformCommissionPct,
+		p.ProductType, p.FileURL, p.CoverImageURL, p.DownloadLimit, p.IsActive, p.PlatformCommissionPct,
 		p.CreatedAt, p.UpdatedAt,
 	)
 	return err
@@ -46,7 +46,8 @@ func (r *LinkPayRepository) CreateProduct(ctx context.Context, p *domain.Digital
 func (r *LinkPayRepository) GetProductBySlug(ctx context.Context, slug string) (*domain.DigitalProduct, error) {
 	query := `
 		SELECT id, tenant_id, slug, name, description, price_cents, currency, product_type,
-		       COALESCE(file_url, ''), download_limit, is_active, platform_commission_pct,
+		       COALESCE(file_url, ''), COALESCE(cover_image_url, ''),
+		       download_limit, is_active, platform_commission_pct,
 		       COALESCE(storage_key, ''), COALESCE(storage_bucket, ''), COALESCE(file_name, ''),
 		       COALESCE(file_size_bytes, 0), COALESCE(mime_type, ''),
 		       created_at, updated_at
@@ -61,7 +62,8 @@ func (r *LinkPayRepository) GetProductBySlug(ctx context.Context, slug string) (
 func (r *LinkPayRepository) GetProductByID(ctx context.Context, id, tenantID string) (*domain.DigitalProduct, error) {
 	query := `
 		SELECT id, tenant_id, slug, name, description, price_cents, currency, product_type,
-		       COALESCE(file_url, ''), download_limit, is_active, platform_commission_pct, created_at, updated_at
+		       COALESCE(file_url, ''), COALESCE(cover_image_url, ''),
+		       download_limit, is_active, platform_commission_pct, created_at, updated_at
 		FROM digital_products
 		WHERE id = $1 AND tenant_id = $2
 	`
@@ -73,7 +75,8 @@ func (r *LinkPayRepository) GetProductByID(ctx context.Context, id, tenantID str
 func (r *LinkPayRepository) ListProducts(ctx context.Context, tenantID string) ([]domain.DigitalProduct, error) {
 	query := `
 		SELECT id, tenant_id, slug, name, description, price_cents, currency, product_type,
-		       COALESCE(file_url, ''), download_limit, is_active, platform_commission_pct,
+		       COALESCE(file_url, ''), COALESCE(cover_image_url, ''),
+		       download_limit, is_active, platform_commission_pct,
 		       COALESCE(storage_key, ''), COALESCE(storage_bucket, ''), COALESCE(file_name, ''),
 		       COALESCE(file_size_bytes, 0), COALESCE(mime_type, ''),
 		       created_at, updated_at
@@ -150,6 +153,24 @@ func (r *LinkPayRepository) UpdateProductStorage(ctx context.Context, id, tenant
 		storageKey, storageBucket, fileName, fileSizeBytes, mimeType, time.Now(),
 		id, tenantID,
 	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("produto não encontrado")
+	}
+	return nil
+}
+
+// UpdateProductCover persiste a URL da imagem de capa do produto.
+// #16: chamado após upload bem-sucedido da cover image.
+func (r *LinkPayRepository) UpdateProductCover(ctx context.Context, id, tenantID, coverImageURL string) error {
+	query := `
+		UPDATE digital_products
+		SET cover_image_url = $1, updated_at = $2
+		WHERE id = $3 AND tenant_id = $4
+	`
+	tag, err := r.db.Exec(ctx, query, coverImageURL, time.Now(), id, tenantID)
 	if err != nil {
 		return err
 	}
@@ -468,6 +489,7 @@ func scanProduct(row scanner) (*domain.DigitalProduct, error) {
 	err := row.Scan(
 		&p.ID, &p.TenantID, &p.Slug, &p.Name, &p.Description,
 		&p.PriceCents, &p.Currency, &p.ProductType, &p.FileURL,
+		&p.CoverImageURL,
 		&p.DownloadLimit, &p.IsActive, &p.PlatformCommissionPct,
 		// BKL-1205: campos de storage MinIO
 		&p.StorageKey, &p.StorageBucket, &p.FileName, &p.FileSizeBytes, &p.MimeType,

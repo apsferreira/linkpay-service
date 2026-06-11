@@ -27,6 +27,7 @@ type DigitalProduct struct {
 	Currency              string    `json:"currency"                 db:"currency"`
 	ProductType           string    `json:"product_type"             db:"product_type"`
 	FileURL               string    `json:"file_url,omitempty"       db:"file_url"`
+	CoverImageURL         string    `json:"cover_image_url,omitempty" db:"cover_image_url"`
 	DownloadLimit         int       `json:"download_limit"           db:"download_limit"`
 	IsActive              bool      `json:"is_active"                db:"is_active"`
 	PlatformCommissionPct int       `json:"platform_commission_pct"  db:"platform_commission_pct"`
