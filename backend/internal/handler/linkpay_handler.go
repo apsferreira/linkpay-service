@@ -1015,32 +1015,24 @@ func (h *LinkPayHandler) DownloadZip(c *fiber.Ctx) error {
 			pw.Close()
 		}()
 
-		httpClient := &http.Client{Timeout: 30 * time.Second}
-
 		for _, entry := range entries {
-			presigned, presignErr := h.minioClient.PresignedURL(c.Context(), storage.LinkPayBucket, entry.storageKey)
-			if presignErr != nil {
-				log.Printf("[linkpay] erro ao gerar presigned URL para ZIP (key=%s): %v", entry.storageKey, presignErr)
-				continue
-			}
-
-			resp, httpErr := httpClient.Get(presigned) //nolint:noctx
-			if httpErr != nil {
-				log.Printf("[linkpay] erro ao baixar arquivo para ZIP (key=%s): %v", entry.storageKey, httpErr)
+			obj, objErr := h.minioClient.GetObject(c.Context(), storage.LinkPayBucket, entry.storageKey)
+			if objErr != nil {
+				log.Printf("[linkpay] erro ao abrir objeto para ZIP (key=%s): %v", entry.storageKey, objErr)
 				continue
 			}
 
 			w, zipErr := zw.Create(entry.fileName)
 			if zipErr != nil {
-				resp.Body.Close()
+				obj.Close()
 				log.Printf("[linkpay] erro ao criar entrada no ZIP (%s): %v", entry.fileName, zipErr)
 				continue
 			}
 
-			if _, copyErr := io.Copy(w, resp.Body); copyErr != nil {
+			if _, copyErr := io.Copy(w, obj); copyErr != nil {
 				log.Printf("[linkpay] erro ao copiar arquivo para ZIP (%s): %v", entry.fileName, copyErr)
 			}
-			resp.Body.Close()
+			obj.Close()
 		}
 	}()
 
