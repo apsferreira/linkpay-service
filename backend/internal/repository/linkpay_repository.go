@@ -484,6 +484,55 @@ func (r *LinkPayRepository) GetUpsellsByProductID(ctx context.Context, productID
 	return upsells, nil
 }
 
+// --- Commission Ledger (BKL-1515) ---
+
+// InsertCommissionEntry insere um registro no ledger de comissões após purchase confirmada.
+func (r *LinkPayRepository) InsertCommissionEntry(ctx context.Context, entry *domain.CommissionEntry) error {
+	query := `
+		INSERT INTO commission_ledger
+			(id, purchase_id, tenant_id, product_id,
+			 gross_amount_cents, commission_percent, commission_cents, creator_payout_cents,
+			 created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+	`
+	_, err := r.db.Exec(ctx, query,
+		entry.ID, entry.PurchaseID, entry.TenantID, entry.ProductID,
+		entry.GrossAmountCents, entry.CommissionPercent, entry.CommissionCents, entry.CreatorPayoutCents,
+		entry.CreatedAt,
+	)
+	return err
+}
+
+// GetCommissionSummary retorna o resumo de receita do IIT no período informado.
+func (r *LinkPayRepository) GetCommissionSummary(ctx context.Context, startDate, endDate string) (*domain.CommissionSummaryResponse, error) {
+	query := `
+		SELECT
+			COALESCE(SUM(gross_amount_cents), 0),
+			COALESCE(SUM(commission_cents), 0),
+			COALESCE(SUM(creator_payout_cents), 0),
+			COUNT(*)
+		FROM commission_ledger
+		WHERE created_at >= $1::TIMESTAMPTZ
+		  AND created_at < ($2::TIMESTAMPTZ + INTERVAL '1 day')
+	`
+	var resp domain.CommissionSummaryResponse
+	var totalGross, totalCommission, totalPayout int64
+	var totalSales int
+	err := r.db.QueryRow(ctx, query, startDate, endDate).Scan(
+		&totalGross, &totalCommission, &totalPayout, &totalSales,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("commission summary: %w", err)
+	}
+	resp.PeriodStart = startDate
+	resp.PeriodEnd = endDate
+	resp.TotalGrossCents = totalGross
+	resp.TotalCommissionCents = totalCommission
+	resp.TotalPayoutCents = totalPayout
+	resp.TotalSales = totalSales
+	return &resp, nil
+}
+
 func scanProduct(row scanner) (*domain.DigitalProduct, error) {
 	var p domain.DigitalProduct
 	err := row.Scan(

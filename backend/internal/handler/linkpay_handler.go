@@ -46,6 +46,8 @@ type LinkPayServiceInterface interface {
 	GetUpsellsByProductID(ctx context.Context, productID string) ([]domain.UpsellSuggestion, error)
 	// #16: cover image
 	UpdateProductCover(ctx context.Context, id, tenantID, coverImageURL string) error
+	// BKL-1515: commission ledger
+	GetCommissionSummary(ctx context.Context, startDate, endDate string) (*domain.CommissionSummaryResponse, error)
 }
 
 // LinkPayHandler gerencia os endpoints do módulo LinkPay.
@@ -651,6 +653,36 @@ func (h *LinkPayHandler) GetSalesStats(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(stats)
+}
+
+// GetCommissionSummary godoc
+//
+//	@Summary      Resumo de comissões do IIT
+//	@Description  Retorna o resumo da receita de comissões da plataforma (IIT) em um período. Requer admin auth.
+//	@Tags         admin
+//	@Produce      json
+//	@Param        start_date  query  string  true  "Data início (YYYY-MM-DD)"
+//	@Param        end_date    query  string  true  "Data fim (YYYY-MM-DD)"
+//	@Security     BearerAuth
+//	@Success      200  {object}  domain.CommissionSummaryResponse
+//	@Failure      400  {object}  map[string]string
+//	@Failure      401  {object}  map[string]string
+//	@Failure      500  {object}  map[string]string
+//	@Router       /api/v1/admin/commission-summary [get]
+func (h *LinkPayHandler) GetCommissionSummary(c *fiber.Ctx) error {
+	startDate := c.Query("start_date")
+	endDate := c.Query("end_date")
+	if startDate == "" || endDate == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "start_date e end_date (YYYY-MM-DD) são obrigatórios"})
+	}
+
+	summary, err := h.service.GetCommissionSummary(c.Context(), startDate, endDate)
+	if err != nil {
+		log.Printf("[linkpay] erro ao buscar commission summary: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "erro ao buscar resumo de comissões"})
+	}
+
+	return c.JSON(summary)
 }
 
 // Download redireciona para o arquivo do produto após validar o token.

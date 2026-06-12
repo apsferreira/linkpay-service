@@ -286,6 +286,30 @@ type ListPayoutsResponse struct {
 	Limit int             `json:"limit"`
 }
 
+// CommissionEntry representa o ledger de auditoria de comissão da plataforma por venda.
+// BKL-1515.
+type CommissionEntry struct {
+	ID                 string    `json:"id"                  db:"id"`
+	PurchaseID         string    `json:"purchase_id"         db:"purchase_id"`
+	TenantID           string    `json:"tenant_id"           db:"tenant_id"`
+	ProductID          string    `json:"product_id"          db:"product_id"`
+	GrossAmountCents   int       `json:"gross_amount_cents"  db:"gross_amount_cents"`
+	CommissionPercent  float64   `json:"commission_percent"  db:"commission_percent"`
+	CommissionCents    int       `json:"commission_cents"    db:"commission_cents"`
+	CreatorPayoutCents int       `json:"creator_payout_cents" db:"creator_payout_cents"`
+	CreatedAt          time.Time `json:"created_at"          db:"created_at"`
+}
+
+// CommissionSummaryResponse é a resposta do GET /admin/commission-summary.
+type CommissionSummaryResponse struct {
+	PeriodStart         string `json:"period_start"`
+	PeriodEnd           string `json:"period_end"`
+	TotalGrossCents     int64  `json:"total_gross_cents"`
+	TotalCommissionCents int64 `json:"total_commission_cents"`
+	TotalPayoutCents    int64  `json:"total_payout_cents"`
+	TotalSales          int    `json:"total_sales"`
+}
+
 type SubscriberFile struct {
 	ProductID   string `json:"product_id"`
 	ProductName string `json:"product_name"`
