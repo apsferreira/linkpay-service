@@ -1,7 +1,5 @@
 package client
 
-// NotificationClient integra com notification-service para envio de email pós-compra.
-
 import (
 	"bytes"
 	"context"
@@ -13,30 +11,34 @@ import (
 	"time"
 )
 
-// NotificationClient envia notificações HTTP ao notification-service.
+const defaultNotificationServiceURL = "http://notification-service:3030"
+
+// PurchaseConfirmedPayload é o payload enviado ao notification-service
+// quando uma compra LinkPay é confirmada.
+type PurchaseConfirmedPayload struct {
+	BuyerEmail    string `json:"buyer_email"`
+	CustomerName  string `json:"customer_name"`
+	ProductName   string `json:"product_name"`
+	DownloadURL   string `json:"download_url"`
+	DownloadLimit int    `json:"download_limit"`
+	PurchaseID    string `json:"purchase_id"`
+	ProductID     string `json:"product_id"`
+}
+
+// NotificationClient envia notificações ao notification-service via HTTP.
 type NotificationClient struct {
 	baseURL      string
 	serviceToken string
 	httpClient   *http.Client
 }
 
-// PurchaseConfirmedPayload é o corpo enviado ao notification-service para
-// disparar o email de confirmação de compra com o link de download.
-type PurchaseConfirmedPayload struct {
-	BuyerEmail    string `json:"buyer_email"`
-	BuyerName     string `json:"buyer_name"`
-	ProductName   string `json:"product_name"`
-	DownloadURL   string `json:"download_url"`
-	DownloadLimit int    `json:"download_limit"`
-}
-
-// NewNotificationClient constrói o client a partir de NOTIFICATION_SERVICE_URL.
-// Retorna nil quando a variável está ausente — fail-open para ambientes sem
-// notification-service (dev/CI).
+// NewNotificationClient cria um NotificationClient lendo as variáveis de ambiente.
+// NOTIFICATION_SERVICE_URL — URL base do notification-service (padrão: http://notification-service:3030).
+// SERVICE_TOKEN        — token de autenticação inter-serviço (header X-Service-Token).
 func NewNotificationClient() *NotificationClient {
 	baseURL := os.Getenv("NOTIFICATION_SERVICE_URL")
 	if baseURL == "" {
-		return nil
+		baseURL = defaultNotificationServiceURL
 	}
 	return &NotificationClient{
 		baseURL:      baseURL,
@@ -47,33 +49,35 @@ func NewNotificationClient() *NotificationClient {
 	}
 }
 
-// SendPurchaseConfirmation dispara o email de confirmação no notification-service.
-// Assinatura compatível com service.NotificationSender.
-func (c *NotificationClient) SendPurchaseConfirmation(ctx context.Context, buyerEmail, buyerName, productName, downloadURL string, downloadLimit int) error {
+// SendPurchaseConfirmed notifica o notification-service sobre uma compra confirmada.
+// Falha é retornada para que o caller decida se deve logar ou abortar.
+func (c *NotificationClient) SendPurchaseConfirmed(ctx context.Context, buyerEmail, customerName, productName, downloadURL string, downloadLimit int, purchaseID, productID string) error {
 	payload := PurchaseConfirmedPayload{
 		BuyerEmail:    buyerEmail,
-		BuyerName:     buyerName,
+		CustomerName:  customerName,
 		ProductName:   productName,
 		DownloadURL:   downloadURL,
 		DownloadLimit: downloadLimit,
+		PurchaseID:    purchaseID,
+		ProductID:     productID,
 	}
-
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("notification_client: marshal: %w", err)
 	}
 
-	url := c.baseURL + "/api/v1/notifications/purchase-confirmed"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/v1/notifications/linkpay/purchase-confirmed", bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("notification_client: new request: %w", err)
+		return fmt.Errorf("notification_client: create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Service-Token", c.serviceToken)
+	if c.serviceToken != "" {
+		req.Header.Set("X-Service-Token", c.serviceToken)
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("notification_client: do: %w", err)
+		return fmt.Errorf("notification_client: request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
