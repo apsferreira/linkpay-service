@@ -549,6 +549,12 @@ func (h *LinkPayHandler) GetCommissionSummary(c *fiber.Ctx) error {
 	if startDate == "" || endDate == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "start_date e end_date (YYYY-MM-DD) são obrigatórios"})
 	}
+	if _, err := time.Parse("2006-01-02", startDate); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "start_date inválido (use YYYY-MM-DD)"})
+	}
+	if _, err := time.Parse("2006-01-02", endDate); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "end_date inválido (use YYYY-MM-DD)"})
+	}
 
 	summary, err := h.service.GetCommissionSummary(c.Context(), startDate, endDate)
 	if err != nil {
