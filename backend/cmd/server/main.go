@@ -88,6 +88,15 @@ func main() {
 	// --- Pulse (métricas fire-and-forget) — antes do AsaasClient pois é injetado nele ---
 	pulseClient := pulse.New()
 
+	// --- Redis (distributed lock para payout — evita race em múltiplas réplicas) ---
+	redisURL := getEnvOrDefault("REDIS_URL", "redis://localhost:6379/0")
+	redisOpts, err := redis.ParseURL(redisURL)
+	if err != nil {
+		log.Fatalf("parse redis url: %v", err)
+	}
+	payoutRedisClient := redis.NewClient(redisOpts)
+	defer payoutRedisClient.Close()
+
 	// --- Services ---
 	asaasBaseURL := getEnvOrDefault("ASAAS_BASE_URL", "https://sandbox.asaas.com/api/v3")
 	asaasAPIKey := mustEnv("ASAAS_API_KEY")
@@ -96,7 +105,7 @@ func main() {
 
 	linkPaySvc := service.NewLinkPayService(linkPayRepo, asaasClient, publisher, nil)
 
-	payoutSvc := service.NewPayoutService(payoutRepo, asaasClient)
+	payoutSvc := service.NewPayoutService(payoutRepo, asaasClient, payoutRedisClient)
 
 	subscriptionSvc := service.NewSubscriptionService(subscriptionRepo, linkPayRepo, asaasClient)
 
