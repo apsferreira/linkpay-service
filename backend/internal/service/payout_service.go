@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 
 	"linkpay-service/internal/domain"
 	"linkpay-service/internal/repository"
@@ -28,15 +29,23 @@ type PayoutRepository interface {
 	ListPayouts(ctx context.Context, tenantID string, limit, offset int) ([]domain.CreatorPayout, int, error)
 }
 
+// RedisClient define os métodos do Redis usados pelo PayoutService.
+// Interface permite mock em testes sem depender de redis real.
+type RedisClient interface {
+	SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) *redis.BoolCmd
+	Del(ctx context.Context, keys ...string) *redis.IntCmd
+}
+
 // PayoutService gerencia o fluxo de repasse automático para produtores.
 type PayoutService struct {
-	repo        PayoutRepository
-	asaas       *AsaasClient
+	repo  PayoutRepository
+	asaas *AsaasClient
+	redis RedisClient
 }
 
 // NewPayoutService cria um PayoutService com as dependências injetadas.
-func NewPayoutService(repo PayoutRepository, asaas *AsaasClient) *PayoutService {
-	return &PayoutService{repo: repo, asaas: asaas}
+func NewPayoutService(repo PayoutRepository, asaas *AsaasClient, redis RedisClient) *PayoutService {
+	return &PayoutService{repo: repo, asaas: asaas, redis: redis}
 }
 
 // RunDailyPayouts processa repasses pendentes para todos os tenants elegíveis.
@@ -65,7 +74,25 @@ func (s *PayoutService) RunDailyPayouts(ctx context.Context) error {
 }
 
 // processTenantPayout calcula saldo e executa repasse para um tenant específico.
+// Usa lock distribuído no Redis (SETNX) para evitar duplicidade em múltiplas réplicas.
 func (s *PayoutService) processTenantPayout(ctx context.Context, tenantID string) error {
+	today := time.Now().UTC().Format("2006-01-02")
+	lockKey := fmt.Sprintf("payout:lock:%s:%s", tenantID, today)
+
+	ok, err := s.redis.SetNX(ctx, lockKey, "1", 24*time.Hour).Result()
+	if err != nil {
+		return fmt.Errorf("erro ao adquirir lock distribuído para tenant %s: %w", tenantID, err)
+	}
+	if !ok {
+		log.Printf("[payout] tenant %s já em processamento hoje — pulando", tenantID)
+		return nil
+	}
+	defer func() {
+		if s.redis.Del(ctx, lockKey).Err() != nil {
+			log.Printf("[payout] WARN: erro ao liberar lock %s", lockKey)
+		}
+	}()
+
 	pixKey, err := s.repo.GetTenantPixKey(ctx, tenantID)
 	if err != nil {
 		return fmt.Errorf("erro ao buscar pix_key: %w", err)
