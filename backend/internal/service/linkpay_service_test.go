@@ -139,10 +139,29 @@ func (m *mockRepo) GetUpsellsByProductID(_ context.Context, productID string) ([
 	return nil, nil
 }
 
-type mockPublisher struct{ called bool }
+type mockPublisher struct {
+	called bool
+	fail   bool
+}
 
 func (m *mockPublisher) PublishLinkPayPurchaseConfirmed(_ context.Context, _ messaging.LinkPayPurchaseConfirmedEvent) error {
 	m.called = true
+	if m.fail {
+		return errors.New("publisher simulated failure")
+	}
+	return nil
+}
+
+type mockNotifier struct {
+	called bool
+	fail   bool
+}
+
+func (m *mockNotifier) SendPurchaseConfirmed(_ context.Context, _, _, _, _ string, _ int, _, _ string) error {
+	m.called = true
+	if m.fail {
+		return errors.New("notifier simulated failure")
+	}
 	return nil
 }
 
@@ -396,5 +415,108 @@ func TestProcessPaymentConfirmed_PublicaEvento(t *testing.T) {
 	}
 	if !pub.called {
 		t.Error("evento de compra confirmada não foi publicado")
+	}
+}
+
+func TestProcessPaymentConfirmed_NotificaNotificationService(t *testing.T) {
+	repo := newMockRepo()
+	notif := &mockNotifier{}
+	svc := service.NewLinkPayServiceWithNotifier(repo, nil, nil, nil, notif)
+
+	prod := makeProduct("prod-7", "tenant-1", "curso", 5000, true)
+	prod.DownloadLimit = 3
+	repo.products["prod-7"] = prod
+
+	chargeID := "charge-notif"
+	purchase := &domain.DigitalPurchase{
+		ID:            "purch-7",
+		ProductID:     "prod-7",
+		TenantID:      "tenant-1",
+		CustomerEmail: "comprador@example.com",
+		CustomerName:  "Maria Santos",
+		AmountCents:   5000,
+		PaymentStatus: "pending",
+		AccessToken:   "",
+	}
+	repo.purchases[chargeID] = purchase
+	repo.byID["purch-7"] = purchase
+
+	err := svc.ProcessPaymentConfirmed(context.Background(), chargeID)
+	if err != nil {
+		t.Fatalf("ProcessPaymentConfirmed retornou erro: %v", err)
+	}
+	if !repo.confirmCalled {
+		t.Error("ConfirmPurchase não foi chamado")
+	}
+	if !notif.called {
+		t.Error("notification-service não foi notificado")
+	}
+}
+
+func TestProcessPaymentConfirmed_NotifierFallbackNaoBloqueia(t *testing.T) {
+	repo := newMockRepo()
+	notif := &mockNotifier{fail: true}
+	pub := &mockPublisher{fail: true}
+	svc := service.NewLinkPayServiceWithNotifier(repo, nil, pub, nil, notif)
+
+	prod := makeProduct("prod-8", "tenant-1", "ebook", 1990, true)
+	repo.products["prod-8"] = prod
+
+	chargeID := "charge-notif-fail"
+	purchase := &domain.DigitalPurchase{
+		ID:            "purch-8",
+		ProductID:     "prod-8",
+		TenantID:      "tenant-1",
+		CustomerEmail: "cliente@example.com",
+		CustomerName:  "Carlos",
+		AmountCents:   1990,
+		PaymentStatus: "pending",
+		AccessToken:   "",
+	}
+	repo.purchases[chargeID] = purchase
+	repo.byID["purch-8"] = purchase
+
+	// Falhas no publisher + notifier não devem impedir a confirmação
+	err := svc.ProcessPaymentConfirmed(context.Background(), chargeID)
+	if err != nil {
+		t.Fatalf("ProcessPaymentConfirmed retornou erro mesmo com notifier falhando: %v", err)
+	}
+	if !repo.confirmCalled {
+		t.Error("ConfirmPurchase não foi chamado mesmo com notifier falhando")
+	}
+}
+
+func TestProcessPaymentConfirmed_PublisherFalhaNotifierSucesso(t *testing.T) {
+	repo := newMockRepo()
+	pub := &mockPublisher{fail: true}
+	notif := &mockNotifier{}
+	svc := service.NewLinkPayServiceWithNotifier(repo, nil, pub, nil, notif)
+
+	prod := makeProduct("prod-9", "tenant-1", "video", 7500, true)
+	repo.products["prod-9"] = prod
+
+	chargeID := "charge-pub-fail"
+	purchase := &domain.DigitalPurchase{
+		ID:            "purch-9",
+		ProductID:     "prod-9",
+		TenantID:      "tenant-1",
+		CustomerEmail: "user@example.com",
+		CustomerName:  "Ana",
+		AmountCents:   7500,
+		PaymentStatus: "pending",
+		AccessToken:   "",
+	}
+	repo.purchases[chargeID] = purchase
+	repo.byID["purch-9"] = purchase
+
+	err := svc.ProcessPaymentConfirmed(context.Background(), chargeID)
+	if err != nil {
+		t.Fatalf("ProcessPaymentConfirmed retornou erro: %v", err)
+	}
+	if !repo.confirmCalled {
+		t.Error("ConfirmPurchase não foi chamado")
+	}
+	if !notif.called {
+		t.Error("notifier deveria ter sido chamado após falha do publisher")
 	}
 }
