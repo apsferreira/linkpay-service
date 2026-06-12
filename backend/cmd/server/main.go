@@ -139,6 +139,9 @@ func main() {
 	// --- Rotas ---
 	authMiddleware := middleware.JWTAuth(jwt.NewJWTService(jwtSecret))
 
+	// Página pública HTML compartilhável (issue #14)
+	app.Get("/p/:slug", linkPayHandler.RenderPublicProductPage)
+
 	// Públicas — rate limit 60 req/min por IP (SEC-012)
 	rl := middleware.NewRateLimiter(60, time.Minute)
 	pub := app.Group("/api/v1/public", rl.Handler())
