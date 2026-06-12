@@ -132,6 +132,12 @@ func (m *mockRepo) DeleteProductFile(_ context.Context, fileID, productID string
 func (m *mockRepo) GetUpsellsByProductID(_ context.Context, productID string) ([]domain.UpsellSuggestion, error) {
 	return nil, nil
 }
+func (m *mockRepo) InsertCommissionEntry(_ context.Context, _ *domain.CommissionEntry) error {
+	return nil
+}
+func (m *mockRepo) GetCommissionSummary(_ context.Context, _, _ string) (*domain.CommissionSummaryResponse, error) {
+	return &domain.CommissionSummaryResponse{}, nil
+}
 
 type mockPublisher struct{ called bool }
 
