@@ -93,15 +93,17 @@ func TestProcessTenantPayout_DistributedLock_BlocksConcurrent(t *testing.T) {
 		redis: newMockRedis(),
 	}
 
+	today := time.Now().UTC().Format("2006-01-02")
+
 	// Primeira chamada — adquire lock, processa, libera no defer
 	// O stub repo retorna erro de GetTenantPixKey, que é esperado.
-	err := svc.processTenantPayout(context.Background(), "tenant-1")
+	err := svc.processTenantPayout(context.Background(), "tenant-1", today)
 	if err == nil {
 		t.Fatal("expected error from stub repo, got nil")
 	}
 
 	// Lock foi liberado no defer, então segunda chamada também processa
-	err = svc.processTenantPayout(context.Background(), "tenant-1")
+	err = svc.processTenantPayout(context.Background(), "tenant-1", today)
 	if err == nil {
 		t.Fatal("expected error from stub repo, got nil")
 	}
@@ -121,7 +123,7 @@ func TestProcessTenantPayout_DistributedLock_SkipWhenLocked(t *testing.T) {
 	svc.redis.(*mockRedis).mu.Unlock()
 
 	// Segunda chamada — lock já existe, deve pular sem erro
-	err := svc.processTenantPayout(context.Background(), "tenant-2")
+	err := svc.processTenantPayout(context.Background(), "tenant-2", today)
 	if err != nil {
 		t.Fatalf("expected nil (skip), got %v", err)
 	}
