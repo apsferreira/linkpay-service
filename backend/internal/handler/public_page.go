@@ -132,7 +132,7 @@ type productPageData struct {
 	PageURL        string
 }
 
-// RenderPublicProductPage serve a página HTML pública do produto em GET /p/:slug.
+// RenderPublicProductPage serve a página HTML pública do produto em GET /:slug.
 // Issue #14: rota dedicada para compartilhamento em redes sociais (OG tags + checkout PIX).
 func (h *LinkPayHandler) RenderPublicProductPage(c *fiber.Ctx) error {
 	slug := c.Params("slug")
