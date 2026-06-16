@@ -116,10 +116,6 @@ func main() {
 	// BKL-1252: Pulse client — fire-and-forget, compartilhado entre handlers e AsaasClient.
 
 	linkPayHandler := handler.NewLinkPayHandler(linkPaySvc, webhookSecret, minioClient, pulseClient)
-	// #8: Redis para idempotência do webhook Asaas — se REDIS_URL inválido, segue sem dedupe.
-	if redisClient := newWebhookRedisClient(ctx, logger); redisClient != nil {
-		linkPayHandler.WithRedis(redisClient)
-	}
 	payoutHandler := handler.NewPayoutHandler(payoutSvc, pulseClient)
 	subscriptionHandler := handler.NewSubscriptionHandler(subscriptionSvc)
 

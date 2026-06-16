@@ -79,19 +79,21 @@ func (s *PayoutService) processTenantPayout(ctx context.Context, tenantID string
 	today := time.Now().UTC().Format("2006-01-02")
 	lockKey := fmt.Sprintf("payout:lock:%s:%s", tenantID, today)
 
-	ok, err := s.redis.SetNX(ctx, lockKey, "1", 24*time.Hour).Result()
-	if err != nil {
-		return fmt.Errorf("erro ao adquirir lock distribuído para tenant %s: %w", tenantID, err)
-	}
-	if !ok {
-		log.Printf("[payout] tenant %s já em processamento hoje — pulando", tenantID)
-		return nil
-	}
-	defer func() {
-		if s.redis.Del(ctx, lockKey).Err() != nil {
-			log.Printf("[payout] WARN: erro ao liberar lock %s", lockKey)
+	if s.redis != nil {
+		ok, err := s.redis.SetNX(ctx, lockKey, "1", 24*time.Hour).Result()
+		if err != nil {
+			return fmt.Errorf("erro ao adquirir lock distribuído para tenant %s: %w", tenantID, err)
 		}
-	}()
+		if !ok {
+			log.Printf("[payout] tenant %s já em processamento hoje — pulando", tenantID)
+			return nil
+		}
+		defer func() {
+			if s.redis.Del(ctx, lockKey).Err() != nil {
+				log.Printf("[payout] WARN: erro ao liberar lock %s", lockKey)
+			}
+		}()
+	}
 
 	pixKey, err := s.repo.GetTenantPixKey(ctx, tenantID)
 	if err != nil {

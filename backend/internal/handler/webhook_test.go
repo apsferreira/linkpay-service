@@ -75,6 +75,13 @@ func (f *fakeLinkPayService) GetPurchaseByToken(context.Context, string) (*domai
 func (f *fakeLinkPayService) GetUpsellsByProductID(context.Context, string) ([]domain.UpsellSuggestion, error) {
 	return nil, nil
 }
+func (f *fakeLinkPayService) RefundPurchase(context.Context, string, string) error { return nil }
+func (f *fakeLinkPayService) UpdateProductCover(context.Context, string, string, string) error {
+	return nil
+}
+func (f *fakeLinkPayService) GetCommissionSummary(context.Context, string, string) (*domain.CommissionSummaryResponse, error) {
+	return &domain.CommissionSummaryResponse{}, nil
+}
 
 // ─── mock: PayoutServiceInterface ───────────────────────────────────────────
 

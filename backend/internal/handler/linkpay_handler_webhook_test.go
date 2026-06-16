@@ -73,6 +73,11 @@ func (m *mockWebhookService) GetPurchaseByToken(_ context.Context, _ string) (*d
 func (m *mockWebhookService) GetUpsellsByProductID(_ context.Context, _ string) ([]domain.UpsellSuggestion, error) {
 	return nil, nil
 }
+func (m *mockWebhookService) UpdateProductCover(_ context.Context, _, _, _ string) error { return nil }
+func (m *mockWebhookService) RefundPurchase(_ context.Context, _, _ string) error            { return nil }
+func (m *mockWebhookService) GetCommissionSummary(_ context.Context, _, _ string) (*domain.CommissionSummaryResponse, error) {
+	return &domain.CommissionSummaryResponse{}, nil
+}
 
 // TestHandleWebhook_IdempotenciaRedis verifica que um segundo evento com o mesmo
 // chargeID retorna 200 sem chamar ProcessPaymentConfirmed.

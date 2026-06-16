@@ -172,7 +172,7 @@ func newFakeAsaas() *fakeAsaas {
 func (f *fakeAsaas) close() { f.server.Close() }
 
 func (f *fakeAsaas) client() *service.AsaasClient {
-	return service.NewAsaasClient(f.server.URL, "test-key", nil)
+	return service.NewAsaasClient(f.server.URL, "test-key", nil, nil)
 }
 
 // ─── RunDailyPayouts ─────────────────────────────────────────────────────────
@@ -182,7 +182,7 @@ func TestRunDailyPayouts_SemTenants(t *testing.T) {
 	asaas := newFakeAsaas()
 	defer asaas.close()
 
-	svc := service.NewPayoutService(repo, asaas.client())
+	svc := service.NewPayoutService(repo, asaas.client(), nil)
 	if err := svc.RunDailyPayouts(context.Background()); err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestRunDailyPayouts_ErroNaListaDeTenants(t *testing.T) {
 	asaas := newFakeAsaas()
 	defer asaas.close()
 
-	svc := service.NewPayoutService(repo, asaas.client())
+	svc := service.NewPayoutService(repo, asaas.client(), nil)
 	if err := svc.RunDailyPayouts(context.Background()); err == nil {
 		t.Fatal("esperava erro quando GetTenantsWithEligiblePayouts falha")
 	}
@@ -218,7 +218,7 @@ func TestRunDailyPayouts_TenantSemPixKey_Pula(t *testing.T) {
 	asaas := newFakeAsaas()
 	defer asaas.close()
 
-	svc := service.NewPayoutService(repo, asaas.client())
+	svc := service.NewPayoutService(repo, asaas.client(), nil)
 	if err := svc.RunDailyPayouts(context.Background()); err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -241,7 +241,7 @@ func TestRunDailyPayouts_AbaixoDoMinimo_Pula(t *testing.T) {
 	asaas := newFakeAsaas()
 	defer asaas.close()
 
-	svc := service.NewPayoutService(repo, asaas.client())
+	svc := service.NewPayoutService(repo, asaas.client(), nil)
 	if err := svc.RunDailyPayouts(context.Background()); err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -265,7 +265,7 @@ func TestRunDailyPayouts_Sucesso_CriaTransferenciaAsaas(t *testing.T) {
 	asaas.transferID = "tx-001"
 	defer asaas.close()
 
-	svc := service.NewPayoutService(repo, asaas.client())
+	svc := service.NewPayoutService(repo, asaas.client(), nil)
 	if err := svc.RunDailyPayouts(context.Background()); err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -314,7 +314,7 @@ func TestRunDailyPayouts_AsaasFalha_MarcaPayoutFailed(t *testing.T) {
 	asaas.failBody = "boom"
 	defer asaas.close()
 
-	svc := service.NewPayoutService(repo, asaas.client())
+	svc := service.NewPayoutService(repo, asaas.client(), nil)
 	err := svc.RunDailyPayouts(context.Background())
 	if err == nil {
 		t.Fatal("esperava erro propagado quando Asaas falha")
@@ -345,7 +345,7 @@ func TestRequestManualPayout_AbaixoMinimo(t *testing.T) {
 	asaas := newFakeAsaas()
 	defer asaas.close()
 
-	svc := service.NewPayoutService(repo, asaas.client())
+	svc := service.NewPayoutService(repo, asaas.client(), nil)
 	_, err := svc.RequestManualPayout(context.Background(), "tenant-1", "chave-pix", 0)
 	if err == nil || !strings.Contains(err.Error(), "abaixo do mínimo") {
 		t.Fatalf("esperava erro de mínimo, got %v", err)
@@ -358,7 +358,7 @@ func TestRequestManualPayout_ValorMaiorQueDisponivel(t *testing.T) {
 	asaas := newFakeAsaas()
 	defer asaas.close()
 
-	svc := service.NewPayoutService(repo, asaas.client())
+	svc := service.NewPayoutService(repo, asaas.client(), nil)
 	_, err := svc.RequestManualPayout(context.Background(), "tenant-1", "chave-pix", 999900)
 	if err == nil || !strings.Contains(err.Error(), "superior ao disponível") {
 		t.Fatalf("esperava erro de saldo insuficiente, got %v", err)
@@ -378,7 +378,7 @@ func TestRequestManualPayout_Sucesso(t *testing.T) {
 	asaas := newFakeAsaas()
 	defer asaas.close()
 
-	svc := service.NewPayoutService(repo, asaas.client())
+	svc := service.NewPayoutService(repo, asaas.client(), nil)
 	payout, err := svc.RequestManualPayout(context.Background(), "tenant-1", "chave-pix", 0)
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
@@ -398,7 +398,7 @@ func TestPreviewAnticipation_SemElegiveis(t *testing.T) {
 	asaas := newFakeAsaas()
 	defer asaas.close()
 
-	svc := service.NewPayoutService(repo, asaas.client())
+	svc := service.NewPayoutService(repo, asaas.client(), nil)
 	preview, err := svc.PreviewAnticipation(context.Background(), "tenant-1")
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
@@ -417,7 +417,7 @@ func TestPreviewAnticipation_CalculaTaxaECorpo(t *testing.T) {
 	asaas := newFakeAsaas()
 	defer asaas.close()
 
-	svc := service.NewPayoutService(repo, asaas.client())
+	svc := service.NewPayoutService(repo, asaas.client(), nil)
 	preview, err := svc.PreviewAnticipation(context.Background(), "tenant-1")
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
@@ -441,7 +441,7 @@ func TestRequestAnticipation_SemPixKey(t *testing.T) {
 	asaas := newFakeAsaas()
 	defer asaas.close()
 
-	svc := service.NewPayoutService(repo, asaas.client())
+	svc := service.NewPayoutService(repo, asaas.client(), nil)
 	_, err := svc.RequestAnticipation(context.Background(), "tenant-1", "")
 	if err == nil || !strings.Contains(err.Error(), "chave PIX") {
 		t.Fatalf("esperava erro de pix_key ausente, got %v", err)
@@ -456,7 +456,7 @@ func TestRequestAnticipation_ValorAbaixoDoMinimo(t *testing.T) {
 	asaas := newFakeAsaas()
 	defer asaas.close()
 
-	svc := service.NewPayoutService(repo, asaas.client())
+	svc := service.NewPayoutService(repo, asaas.client(), nil)
 	_, err := svc.RequestAnticipation(context.Background(), "tenant-1", "chave-pix")
 	if err == nil || !strings.Contains(err.Error(), "mínimo") {
 		t.Fatalf("esperava erro de mínimo, got %v", err)
@@ -472,7 +472,7 @@ func TestRequestAnticipation_Sucesso(t *testing.T) {
 	asaas.transferID = "tx-antecipa"
 	defer asaas.close()
 
-	svc := service.NewPayoutService(repo, asaas.client())
+	svc := service.NewPayoutService(repo, asaas.client(), nil)
 	payout, err := svc.RequestAnticipation(context.Background(), "tenant-1", "chave-pix")
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
@@ -509,7 +509,7 @@ func TestRequestAnticipation_UsaPixKeySalva(t *testing.T) {
 	asaas := newFakeAsaas()
 	defer asaas.close()
 
-	svc := service.NewPayoutService(repo, asaas.client())
+	svc := service.NewPayoutService(repo, asaas.client(), nil)
 	if _, err := svc.RequestAnticipation(context.Background(), "tenant-1", ""); err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -524,7 +524,7 @@ func TestHandleTransferWebhook_Completed(t *testing.T) {
 	repo := newMockPayoutRepo()
 	asaas := newFakeAsaas()
 	defer asaas.close()
-	svc := service.NewPayoutService(repo, asaas.client())
+	svc := service.NewPayoutService(repo, asaas.client(), nil)
 
 	if err := svc.HandleTransferWebhook(context.Background(), "TRANSFER_COMPLETED", "tx-1", ""); err != nil {
 		t.Fatalf("erro inesperado: %v", err)
@@ -538,7 +538,7 @@ func TestHandleTransferWebhook_Failed(t *testing.T) {
 	repo := newMockPayoutRepo()
 	asaas := newFakeAsaas()
 	defer asaas.close()
-	svc := service.NewPayoutService(repo, asaas.client())
+	svc := service.NewPayoutService(repo, asaas.client(), nil)
 
 	if err := svc.HandleTransferWebhook(context.Background(), "TRANSFER_FAILED", "tx-2", "saldo insuficiente"); err != nil {
 		t.Fatalf("erro inesperado: %v", err)
@@ -552,7 +552,7 @@ func TestHandleTransferWebhook_EventoDesconhecido(t *testing.T) {
 	repo := newMockPayoutRepo()
 	asaas := newFakeAsaas()
 	defer asaas.close()
-	svc := service.NewPayoutService(repo, asaas.client())
+	svc := service.NewPayoutService(repo, asaas.client(), nil)
 
 	if err := svc.HandleTransferWebhook(context.Background(), "TRANSFER_PENDING", "tx-3", ""); err != nil {
 		t.Fatalf("erro inesperado: %v", err)
@@ -569,7 +569,7 @@ func TestGetBalance_Delegado(t *testing.T) {
 	repo.balance["tenant-1"] = &domain.Balance{AvailableCents: 12345, NextPayoutDate: "2026-06-15"}
 	asaas := newFakeAsaas()
 	defer asaas.close()
-	svc := service.NewPayoutService(repo, asaas.client())
+	svc := service.NewPayoutService(repo, asaas.client(), nil)
 
 	b, err := svc.GetBalance(context.Background(), "tenant-1")
 	if err != nil {
@@ -587,7 +587,7 @@ func TestListPayouts_CalculaPaginacao(t *testing.T) {
 	}
 	asaas := newFakeAsaas()
 	defer asaas.close()
-	svc := service.NewPayoutService(repo, asaas.client())
+	svc := service.NewPayoutService(repo, asaas.client(), nil)
 
 	resp, err := svc.ListPayouts(context.Background(), "tenant-1", 20, 20)
 	if err != nil {
@@ -608,7 +608,7 @@ func TestListPayouts_LimitZeroNaoQuebra(t *testing.T) {
 	repo := newMockPayoutRepo()
 	asaas := newFakeAsaas()
 	defer asaas.close()
-	svc := service.NewPayoutService(repo, asaas.client())
+	svc := service.NewPayoutService(repo, asaas.client(), nil)
 
 	if _, err := svc.ListPayouts(context.Background(), "tenant-1", 0, 0); err != nil {
 		t.Fatalf("erro inesperado para limit=0: %v", err)
