@@ -56,11 +56,15 @@ func (s *PayoutService) RunDailyPayouts(ctx context.Context) error {
 		return fmt.Errorf("erro ao buscar tenants elegíveis: %w", err)
 	}
 
-	log.Printf("[payout] job iniciado — %d tenants elegíveis", len(tenants))
+	// Captura a data no início do job para que todos os lockKeys do batch usem
+	// o mesmo valor, mesmo que o processamento cruze meia-noite UTC.
+	today := time.Now().UTC().Format("2006-01-02")
+
+	log.Printf("[payout] job iniciado — %d tenants elegíveis (data %s)", len(tenants), today)
 
 	var errs []error
 	for _, tenantID := range tenants {
-		if err := s.processTenantPayout(ctx, tenantID); err != nil {
+		if err := s.processTenantPayout(ctx, tenantID, today); err != nil {
 			log.Printf("[payout] erro no tenant %s: %v", tenantID, err)
 			errs = append(errs, fmt.Errorf("tenant %s: %w", tenantID, err))
 		}
@@ -75,8 +79,9 @@ func (s *PayoutService) RunDailyPayouts(ctx context.Context) error {
 
 // processTenantPayout calcula saldo e executa repasse para um tenant específico.
 // Usa lock distribuído no Redis (SETNX) para evitar duplicidade em múltiplas réplicas.
-func (s *PayoutService) processTenantPayout(ctx context.Context, tenantID string) error {
-	today := time.Now().UTC().Format("2006-01-02")
+// O parâmetro today é capturado pelo chamador (RunDailyPayouts) no início do batch
+// para evitar que o lockKey mude se o processamento cruzar meia-noite UTC.
+func (s *PayoutService) processTenantPayout(ctx context.Context, tenantID, today string) error {
 	lockKey := fmt.Sprintf("payout:lock:%s:%s", tenantID, today)
 
 	if s.redis != nil {
