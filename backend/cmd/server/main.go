@@ -27,6 +27,7 @@ import (
 	fiberswagger "github.com/swaggo/fiber-swagger"
 
 	_ "linkpay-service/docs/swagger"
+	"linkpay-service/internal/client"
 	"linkpay-service/internal/handler"
 	"linkpay-service/internal/messaging"
 	"linkpay-service/internal/middleware"
@@ -103,7 +104,7 @@ func main() {
 
 	asaasClient := service.NewAsaasClient(asaasBaseURL, asaasAPIKey, logger, pulseClient)
 
-	linkPaySvc := service.NewLinkPayService(linkPayRepo, asaasClient, publisher, nil)
+	linkPaySvc := service.NewLinkPayServiceWithNotifier(linkPayRepo, asaasClient, publisher, nil, client.NewNotificationClient())
 
 	payoutSvc := service.NewPayoutService(payoutRepo, asaasClient, payoutRedisClient)
 
