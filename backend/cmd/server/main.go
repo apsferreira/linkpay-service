@@ -35,10 +35,14 @@ import (
 	"linkpay-service/internal/repository"
 	"linkpay-service/internal/service"
 	"linkpay-service/internal/storage"
+	"linkpay-service/internal/telemetry"
 	"linkpay-service/pkg/jwt"
 )
 
 func main() {
+	shutdownTelemetry := telemetry.Init("linkpay-service")
+	defer shutdownTelemetry()
+
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
 	// --- Banco de dados ---
@@ -135,6 +139,7 @@ func main() {
 	})
 
 	app.Use(recover.New())
+	telemetry.RegisterFiber(app, "linkpay-service")
 	app.Use(middleware.SecurityHeaders())
 	app.Use(cors.New(cors.Config{
 		AllowOrigins: getEnvOrDefault("CORS_ORIGINS", "http://localhost:5173"),
