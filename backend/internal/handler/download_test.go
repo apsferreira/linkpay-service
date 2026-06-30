@@ -143,3 +143,23 @@ func TestDownload_ArquivoIndisponivel_Retorna404(t *testing.T) {
 
 // Garante que o type assertion para domain está estável (evita unused import).
 var _ = domain.DigitalPurchase{}
+
+// ─── STD-008: DownloadZip deve validar limite de downloads ANTES do stream ──
+
+func TestDownloadZip_LimiteAtingido_Retorna403SemStream(t *testing.T) {
+	svc := &downloadStub{downloadErr: errors.New("limite de downloads atingido")}
+
+	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	h := handler.NewLinkPayHandler(svc, testWebhookSecret, nil, pulse.New())
+	app.Get("/download/:token/zip", h.DownloadZip)
+
+	resp := doGet(t, app, "/download/qualquer/zip")
+	if resp.StatusCode != fiber.StatusForbidden {
+		t.Errorf("status = %d, queria 403 quando limite atingido", resp.StatusCode)
+	}
+	if svc.downloadCalls != 1 {
+		t.Errorf("Download chamado %d vezes, queria 1 (gate de limite antes do stream)", svc.downloadCalls)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+}

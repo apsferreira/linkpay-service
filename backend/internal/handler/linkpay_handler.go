@@ -982,16 +982,16 @@ func (h *LinkPayHandler) DownloadZip(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "token obrigatório"})
 	}
 
-	// Valida token de compra
+	// STD-008: valida token, pagamento, expiração E limite de downloads ANTES de iniciar o stream.
+	// service.Download faz todas essas checagens atômicas e incrementa download_count.
+	// Sem isso, o endpoint /zip permitia bypass do download_limit (issue #23).
+	if _, downloadErr := h.service.Download(c.Context(), token); downloadErr != nil {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": downloadErr.Error()})
+	}
+
 	purchase, err := h.service.GetPurchaseByToken(c.Context(), token)
 	if err != nil {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "token inválido"})
-	}
-	if purchase.PaymentStatus != "confirmed" {
-		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "pagamento não confirmado"})
-	}
-	if purchase.AccessExpiresAt != nil && time.Now().After(*purchase.AccessExpiresAt) {
-		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "link de download expirado"})
 	}
 
 	// Busca produto para obter slug (nome do ZIP)
@@ -1069,11 +1069,6 @@ func (h *LinkPayHandler) DownloadZip(c *fiber.Ctx) error {
 			obj.Close()
 		}
 	}()
-
-	// Incrementa download_count (reutiliza Download que já chama IncrementDownload internamente)
-	if _, incErr := h.service.Download(c.Context(), token); incErr != nil {
-		log.Printf("[linkpay] aviso: não foi possível incrementar download_count no ZIP: %v", incErr)
-	}
 
 	return c.Status(fiber.StatusOK).SendStream(pr)
 }
