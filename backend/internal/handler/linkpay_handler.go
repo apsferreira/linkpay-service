@@ -1000,6 +1000,11 @@ func (h *LinkPayHandler) DownloadZip(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "produto não encontrado"})
 	}
 
+	// Bloqueia o stream se o limite de downloads já foi atingido (issue #1)
+	if purchase.DownloadCount >= product.DownloadLimit {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "limite de downloads atingido"})
+	}
+
 	// Lista arquivos adicionais do produto
 	files, err := h.service.ListProductFiles(c.Context(), purchase.ProductID)
 	if err != nil {
