@@ -123,6 +123,8 @@ func main() {
 	linkPayHandler := handler.NewLinkPayHandler(linkPaySvc, webhookSecret, minioClient, pulseClient)
 	payoutHandler := handler.NewPayoutHandler(payoutSvc, pulseClient)
 	subscriptionHandler := handler.NewSubscriptionHandler(subscriptionSvc)
+	// LGPD Art. 18 — endpoints de titularidade do comprador (data-erasure/portability).
+	dataSubjectHandler := handler.NewDataSubjectHandler(subscriptionSvc)
 
 	// --- Fiber app ---
 	app := fiber.New(fiber.Config{
@@ -166,6 +168,9 @@ func main() {
 	pub.Post("/subscriptions/:token/cancel", subscriptionHandler.CancelSubscription)
 	pub.Post("/products/:slug/cart", linkPayHandler.CreateCart) // BKL-1221: upsell via cart-service
 	pub.Post("/purchases/:id/refund", linkPayHandler.RefundPurchase) // CDC Art. 49: direito de arrependimento
+	// LGPD Art. 18 — direitos do titular (comprador): eliminação e portabilidade
+	pub.Delete("/data-erasure", dataSubjectHandler.DataErasure)
+	pub.Post("/data-portability", dataSubjectHandler.DataPortability)
 
 	// Webhook Asaas
 	app.Post("/api/v1/linkpay/webhook", linkPayHandler.HandleWebhook)
@@ -210,6 +215,10 @@ func main() {
 	// Issue #7: RunDailyPayouts precisa ser disparado todo dia, senão criadores nunca recebem.
 	startDailyPayoutJob(payoutSvc, pulseClient, logger)
 
+	// --- Job diário de retenção LGPD (05h BRT) ---
+	// Issue #6: anonimiza PII de compras/assinaturas com mais de BuyerDataRetentionYears anos.
+	startBuyerDataRetentionJob(subscriptionSvc, logger)
+
 	// --- Graceful shutdown ---
 	port := getEnvOrDefault("PORT", "3020")
 	go func() {
@@ -224,6 +233,40 @@ func main() {
 	<-quit
 	logger.Info("shutting down linkpay-service...")
 	_ = app.Shutdown()
+}
+
+// startBuyerDataRetentionJob roda a política de retenção de dados do comprador
+// (LGPD Art. 16) diariamente às 05h BRT: anonimiza PII de compras/assinaturas com
+// mais de domain.BuyerDataRetentionYears anos, mantendo os registros financeiros
+// para fins fiscais e auditoria. Issue #6.
+func startBuyerDataRetentionJob(subscriptionSvc *service.SubscriptionService, logger *slog.Logger) {
+	loc, err := time.LoadLocation("America/Sao_Paulo")
+	if err != nil {
+		logger.Error("falha ao carregar fuso America/Sao_Paulo — retention job em UTC", "error", err)
+		loc = time.UTC
+	}
+
+	go func() {
+		for {
+			now := time.Now().In(loc)
+			next := time.Date(now.Year(), now.Month(), now.Day(), 5, 0, 0, 0, loc)
+			if !next.After(now) {
+				next = next.Add(24 * time.Hour)
+			}
+			time.Sleep(time.Until(next))
+
+			runCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			purchases, subs, retErr := subscriptionSvc.RetentionSweep(runCtx)
+			cancel()
+			if retErr != nil {
+				logger.Error("retenção LGPD falhou", "error", retErr)
+				continue
+			}
+			if purchases > 0 || subs > 0 {
+				logger.Info("retenção LGPD aplicada", "purchases", purchases, "subscriptions", subs)
+			}
+		}
+	}()
 }
 
 func mustEnv(key string) string {

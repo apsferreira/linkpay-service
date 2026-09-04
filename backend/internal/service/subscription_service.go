@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -339,4 +340,113 @@ func (s *SubscriptionService) GetSubscriberFiles(ctx context.Context, token stri
 // ListSubscriptionsByTenant retorna todas as assinaturas de um tenant (admin).
 func (s *SubscriptionService) ListSubscriptionsByTenant(ctx context.Context, tenantID string) ([]domain.DigitalSubscription, error) {
 	return s.repo.ListSubscriptionsByTenant(ctx, tenantID)
+}
+
+// --- LGPD Art. 18 — direitos do titular (comprador/assinante) ---
+
+// normalizeBuyerEmail normaliza o email do titular para comparação case-insensitive.
+func normalizeBuyerEmail(email string) string {
+	return strings.ToLower(strings.TrimSpace(email))
+}
+
+// validateDataSubject prova que o token pertence ao email informado. O token é o
+// access_token de uma compra OU assinatura daquele email — enviado ao titular na
+// confirmação do pagamento. O linkpay não possui contas de usuário, então essa é
+// a forma de comprovar identidade para exercer direitos LGPD.
+func (s *SubscriptionService) validateDataSubject(ctx context.Context, email, token string) error {
+	email = normalizeBuyerEmail(email)
+	if email == "" || token == "" {
+		return fmt.Errorf("email e token são obrigatórios")
+	}
+
+	if p, err := s.linkPayRepo.GetPurchaseByToken(ctx, token); err == nil {
+		if p.CustomerEmail != "" && strings.EqualFold(strings.TrimSpace(p.CustomerEmail), email) {
+			return nil
+		}
+		return fmt.Errorf("token não pertence ao email informado")
+	}
+
+	if sub, err := s.repo.GetSubscriptionByToken(ctx, token); err == nil {
+		if sub.CustomerEmail != "" && strings.EqualFold(strings.TrimSpace(sub.CustomerEmail), email) {
+			return nil
+		}
+		return fmt.Errorf("token não pertence ao email informado")
+	}
+
+	return fmt.Errorf("token inválido")
+}
+
+// EraseBuyerData anonimiza os dados pessoais do titular (LGPD Art. 18, VI):
+// compras e assinaturas vinculadas ao email deixam de armazenar PII (nome, email,
+// CPF), mantendo apenas o registro financeiro (retenção fiscal — Art. 16).
+func (s *SubscriptionService) EraseBuyerData(ctx context.Context, email, token string) (*domain.BuyerDataErasureResult, error) {
+	if err := s.validateDataSubject(ctx, email, token); err != nil {
+		return nil, err
+	}
+	email = normalizeBuyerEmail(email)
+
+	purchases, err := s.linkPayRepo.ErasePurchasesByEmail(ctx, email)
+	if err != nil {
+		return nil, fmt.Errorf("erro ao anonimizar compras do titular: %w", err)
+	}
+	subs, err := s.repo.EraseSubscriptionsByEmail(ctx, email)
+	if err != nil {
+		return nil, fmt.Errorf("erro ao anonimizar assinaturas do titular: %w", err)
+	}
+
+	log.Printf("[lgpd] data erasure concluído: purchases=%d subscriptions=%d", purchases, subs)
+	return &domain.BuyerDataErasureResult{
+		Email:               email,
+		PurchasesErased:     purchases,
+		SubscriptionsErased: subs,
+	}, nil
+}
+
+// ExportBuyerData retorna os dados do titular em formato estruturado e legível
+// por máquina (LGPD Art. 18, V — portabilidade).
+func (s *SubscriptionService) ExportBuyerData(ctx context.Context, email, token string) (*domain.BuyerDataExport, error) {
+	if err := s.validateDataSubject(ctx, email, token); err != nil {
+		return nil, err
+	}
+	email = normalizeBuyerEmail(email)
+
+	purchases, err := s.linkPayRepo.ListPurchasesByEmail(ctx, email)
+	if err != nil {
+		return nil, fmt.Errorf("erro ao listar compras do titular: %w", err)
+	}
+	subs, err := s.repo.ListSubscriptionsByEmail(ctx, email)
+	if err != nil {
+		return nil, fmt.Errorf("erro ao listar assinaturas do titular: %w", err)
+	}
+	if purchases == nil {
+		purchases = []domain.BuyerPurchaseExport{}
+	}
+	if subs == nil {
+		subs = []domain.BuyerSubscriptionExport{}
+	}
+
+	log.Printf("[lgpd] data portability: purchases=%d subscriptions=%d", len(purchases), len(subs))
+	return &domain.BuyerDataExport{
+		Email:         email,
+		GeneratedAt:   time.Now().UTC(),
+		Purchases:     purchases,
+		Subscriptions: subs,
+	}, nil
+}
+
+// RetentionSweep aplica a política de retenção de dados do comprador (LGPD
+// Art. 16): anonimiza a PII de compras e assinaturas com mais de
+// domain.BuyerDataRetentionYears anos, mantendo os registros financeiros.
+// Chamado pelo job diário em main.go.
+func (s *SubscriptionService) RetentionSweep(ctx context.Context) (int64, int64, error) {
+	cutoff := time.Now().AddDate(-domain.BuyerDataRetentionYears, 0, 0)
+	purchases, err := s.linkPayRepo.ErasePurchasesOlderThan(ctx, cutoff)
+	if err != nil {
+		return 0, 0, fmt.Errorf("retenção de compras: %w", err)
+	}
+	subs, err := s.repo.EraseSubscriptionsOlderThan(ctx, cutoff)
+	if err != nil {
+		return purchases, 0, fmt.Errorf("retenção de assinaturas: %w", err)
+	}
+	return purchases, subs, nil
 }

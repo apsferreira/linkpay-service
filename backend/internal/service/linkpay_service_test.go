@@ -146,6 +146,46 @@ func (m *mockRepo) GetCommissionSummary(_ context.Context, _, _ string) (*domain
 	return &domain.CommissionSummaryResponse{}, nil
 }
 
+// --- LGPD Art. 18 (stubs usados pelos testes de data erasure/portability) ---
+
+func (m *mockRepo) ListPurchasesByEmail(_ context.Context, email string) ([]domain.BuyerPurchaseExport, error) {
+	var out []domain.BuyerPurchaseExport
+	for _, p := range m.byID {
+		if p.CustomerEmail != "" && p.CustomerEmail == email {
+			out = append(out, domain.BuyerPurchaseExport{
+				ID: p.ID, ProductID: p.ProductID, AmountCents: p.AmountCents,
+				PaymentMethod: p.PaymentMethod, PaymentStatus: p.PaymentStatus,
+				DownloadCount: p.DownloadCount, CreatedAt: p.CreatedAt,
+			})
+		}
+	}
+	return out, nil
+}
+func (m *mockRepo) ErasePurchasesByEmail(_ context.Context, email string) (int64, error) {
+	var n int64
+	for _, p := range m.byID {
+		if p.CustomerEmail != "" && p.CustomerEmail == email {
+			p.CustomerEmail = ""
+			p.CustomerName = ""
+			p.CustomerCPF = ""
+			n++
+		}
+	}
+	return n, nil
+}
+func (m *mockRepo) ErasePurchasesOlderThan(_ context.Context, cutoff time.Time) (int64, error) {
+	var n int64
+	for _, p := range m.byID {
+		if p.CreatedAt.Before(cutoff) && p.CustomerEmail != "" {
+			p.CustomerEmail = ""
+			p.CustomerName = ""
+			p.CustomerCPF = ""
+			n++
+		}
+	}
+	return n, nil
+}
+
 type mockPublisher struct{ called bool }
 
 func (m *mockPublisher) PublishLinkPayPurchaseConfirmed(_ context.Context, _ messaging.LinkPayPurchaseConfirmedEvent) error {
