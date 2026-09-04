@@ -24,12 +24,32 @@ type downloadStub struct {
 	downloadErr    error
 	downloadCalls  int
 	lastToken      string
+
+	// purchaseResult/productResult permitem simular o estado PÓS-incremento
+	// retornado por GetPurchaseByToken/GetProductByID após h.service.Download()
+	// já ter incrementado download_count (usado no teste de off-by-one do ZIP).
+	purchaseResult *domain.DigitalPurchase
+	productResult  *domain.DigitalProduct
 }
 
 func (d *downloadStub) Download(_ context.Context, token string) (string, error) {
 	d.downloadCalls++
 	d.lastToken = token
 	return d.downloadResult, d.downloadErr
+}
+
+func (d *downloadStub) GetPurchaseByToken(ctx context.Context, token string) (*domain.DigitalPurchase, error) {
+	if d.purchaseResult != nil {
+		return d.purchaseResult, nil
+	}
+	return d.fakeLinkPayService.GetPurchaseByToken(ctx, token)
+}
+
+func (d *downloadStub) GetProductByID(ctx context.Context, id, tenantID string) (*domain.DigitalProduct, error) {
+	if d.productResult != nil {
+		return d.productResult, nil
+	}
+	return d.fakeLinkPayService.GetProductByID(ctx, id, tenantID)
 }
 
 func newDownloadApp(svc *downloadStub) *fiber.App {
@@ -159,6 +179,41 @@ func TestDownloadZip_LimiteAtingido_Retorna403SemStream(t *testing.T) {
 	}
 	if svc.downloadCalls != 1 {
 		t.Errorf("Download chamado %d vezes, queria 1 (gate de limite antes do stream)", svc.downloadCalls)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+}
+
+// Regressão: após reconciliar PR #75 + PR #83, o handler NÃO pode reaplicar o
+// gate de download_limit usando o `purchase` recarregado após h.service.Download()
+// já ter incrementado download_count — isso bloquearia indevidamente o último
+// download legítimo (off-by-one: count pós-incremento == limit).
+func TestDownloadZip_UltimoDownloadLegitimo_NaoBloqueiaPorOffByOne(t *testing.T) {
+	svc := &downloadStub{
+		downloadResult: "produto/arquivo.pdf",
+		purchaseResult: &domain.DigitalPurchase{
+			ID:            "purchase-1",
+			ProductID:     "product-1",
+			TenantID:      "tenant-1",
+			PaymentStatus: "confirmed",
+			DownloadCount: 3, // já incrementado por h.service.Download() para o 3º/último download
+		},
+		productResult: &domain.DigitalProduct{
+			ID:            "product-1",
+			DownloadLimit: 3,
+		},
+	}
+
+	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	h := handler.NewLinkPayHandler(svc, testWebhookSecret, nil, pulse.New())
+	app.Get("/download/:token/zip", h.DownloadZip)
+
+	resp := doGet(t, app, "/download/qualquer/zip")
+	// minioClient é nil neste teste (sem storage configurado), então o caminho
+	// esperado quando o gate NÃO bloqueia indevidamente é 503 — nunca 403 por
+	// "limite de downloads atingido", que indicaria o bug de off-by-one de volta.
+	if resp.StatusCode == fiber.StatusForbidden {
+		t.Errorf("status = 403 (bloqueou o último download legítimo por off-by-one); queria não-403")
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
