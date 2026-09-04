@@ -398,16 +398,18 @@ func (h *LinkPayHandler) UploadProductCover(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	// Gera presigned URL para servir como cover_image_url
+	// #40: persiste o storage_key (não a presigned URL, que expira em 15min).
+	// A presigned URL é regenerada no momento da leitura em GetPublicProduct.
+	if err := h.service.UpdateProductCover(c.Context(), productID, tenantID.String(), storageKey); err != nil {
+		log.Printf("[linkpay] erro ao salvar cover_image_url: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "erro ao salvar imagem de capa"})
+	}
+
+	// Gera presigned URL apenas para resposta imediata do upload.
 	coverImageURL, err := h.minioClient.PresignedURL(c.Context(), storage.LinkPayBucket, storageKey)
 	if err != nil {
 		log.Printf("[linkpay] erro ao gerar presigned URL da cover: %v", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "erro ao gerar link da imagem"})
-	}
-
-	if err := h.service.UpdateProductCover(c.Context(), productID, tenantID.String(), coverImageURL); err != nil {
-		log.Printf("[linkpay] erro ao salvar cover_image_url: %v", err)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "erro ao salvar imagem de capa"})
 	}
 
 	return c.JSON(fiber.Map{
@@ -442,6 +444,18 @@ func (h *LinkPayHandler) GetPublicProduct(c *fiber.Ctx) error {
 
 	// Omitir file_url da resposta pública
 	product.FileURL = ""
+
+	// #40: cover_image_url persistido é storage_key — gera presigned URL fresca a cada leitura.
+	// Compat: se já for URL absoluta (legado), retorna como está.
+	if product.CoverImageURL != "" && h.minioClient.IsConfigured() && product.CoverImageURL[0] != 'h' {
+		presigned, presignErr := h.minioClient.PresignedURL(c.Context(), storage.LinkPayBucket, product.CoverImageURL)
+		if presignErr != nil {
+			log.Printf("[linkpay] aviso: erro ao gerar presigned URL da cover (product=%s): %v", product.ID, presignErr)
+			product.CoverImageURL = ""
+		} else {
+			product.CoverImageURL = presigned
+		}
+	}
 
 	// BKL-1206: inclui arquivos adicionais do produto na resposta pública
 	files, err := h.service.ListProductFiles(c.Context(), product.ID)
