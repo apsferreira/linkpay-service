@@ -982,16 +982,16 @@ func (h *LinkPayHandler) DownloadZip(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "token obrigatório"})
 	}
 
-	// Valida token de compra
+	// STD-008: valida token, pagamento, expiração E limite de downloads ANTES de iniciar o stream.
+	// service.Download faz todas essas checagens atômicas e incrementa download_count.
+	// Sem isso, o endpoint /zip permitia bypass do download_limit (issue #23).
+	if _, downloadErr := h.service.Download(c.Context(), token); downloadErr != nil {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": downloadErr.Error()})
+	}
+
 	purchase, err := h.service.GetPurchaseByToken(c.Context(), token)
 	if err != nil {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "token inválido"})
-	}
-	if purchase.PaymentStatus != "confirmed" {
-		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "pagamento não confirmado"})
-	}
-	if purchase.AccessExpiresAt != nil && time.Now().After(*purchase.AccessExpiresAt) {
-		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "link de download expirado"})
 	}
 
 	// Busca produto para obter slug (nome do ZIP)
@@ -1000,10 +1000,11 @@ func (h *LinkPayHandler) DownloadZip(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "produto não encontrado"})
 	}
 
-	// Bloqueia o stream se o limite de downloads já foi atingido (issue #1)
-	if purchase.DownloadCount >= product.DownloadLimit {
-		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "limite de downloads atingido"})
-	}
+	// NOTA (merge PR #75 + #83): o gate de download_limit já foi aplicado de forma atômica
+	// pela chamada a h.service.Download() acima (que já incrementou download_count). Repetir
+	// a checagem aqui usando o `purchase` recém-recarregado compararia a contagem PÓS-incremento
+	// contra o limite, bloqueando indevidamente o último download legítimo (off-by-one). Por isso
+	// o check duplicado da PR #75 foi removido nesta reconciliação — a PR #83 já cobre o caso.
 
 	// Lista arquivos adicionais do produto
 	files, err := h.service.ListProductFiles(c.Context(), purchase.ProductID)
@@ -1074,11 +1075,6 @@ func (h *LinkPayHandler) DownloadZip(c *fiber.Ctx) error {
 			obj.Close()
 		}
 	}()
-
-	// Incrementa download_count (reutiliza Download que já chama IncrementDownload internamente)
-	if _, incErr := h.service.Download(c.Context(), token); incErr != nil {
-		log.Printf("[linkpay] aviso: não foi possível incrementar download_count no ZIP: %v", incErr)
-	}
 
 	return c.Status(fiber.StatusOK).SendStream(pr)
 }
