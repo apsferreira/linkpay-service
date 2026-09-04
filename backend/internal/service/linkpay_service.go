@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"math"
 	"time"
 
 	"github.com/google/uuid"
@@ -469,7 +470,7 @@ func (s *LinkPayService) RecordCommissionEntry(ctx context.Context, purchase *do
 		commission = domain.DefaultPlatformCommissionPct
 	}
 
-	commissionCents := purchase.AmountCents * commission / 100
+	commissionCents := int(math.Round(float64(purchase.AmountCents) * float64(commission) / 100))
 	creatorPayoutCents := purchase.AmountCents - commissionCents
 
 	entry := &domain.CommissionEntry{
