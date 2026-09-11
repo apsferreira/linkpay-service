@@ -35,6 +35,7 @@ func (c *Client) Track(ctx context.Context, eventName, userID string, props map[
 	go func() {
 		payload := map[string]interface{}{
 			"event_name": eventName,
+			"product":    "linkpay",
 			"user_id":    userID,
 			"properties": props,
 		}
