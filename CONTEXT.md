@@ -2,7 +2,7 @@
 
 ## Propósito
 
-Plataforma de venda de produtos digitais (infoprodutos) do ecossistema IIT — concorrente direto de Hotmart, Kiwify e Eduzz. Gerencia produtos digitais, landing pages públicas por slug, cobranças PIX/cartão via gateway, armazenamento de arquivos, repasses automáticos ao criador (payout) e assinaturas recorrentes. Extração autônoma do código LinkPay que vivia dentro do checkout-service ([ADR-003](../instituto-itinerante-ecosystem/docs/decisions/ADR-003-linkpay-standalone.md)).
+Plataforma de venda de produtos digitais (infoprodutos) do ecossistema IIT — concorrente direto de Hotmart, Kiwify e Eduzz. Gerencia produtos digitais, landing pages públicas por slug, cobranças PIX/cartão via gateway, armazenamento de arquivos, repasses automáticos ao criador (payout) e assinaturas recorrentes. Extração autônoma do código LinkPay que vivia dentro do checkout-service ([ADR-003](../instituto-itinerante-ecosystem/docs/adr/ADR-003-linkpay-standalone.md)).
 
 > **Nota de conformidade (STD-007):** integração direta com o gateway Asaas (clientes, cobranças, transferências) é uma **exceção documentada e aprovada** em `instituto-itinerante-ecosystem/docs/STANDARDS.md` (STD-007), amparada pelo ADR-003. Não é violação — mas o ADR-003 original previa o linkpay-service chamando o checkout-service como dependência externa para abrir cobranças; na prática o serviço evoluiu para integrar o Asaas diretamente (`internal/service/asaas_client.go`). Essa divergência entre o texto do ADR e a implementação real não está reconciliada em nenhum documento — **pendência de decisão do Antonio**: atualizar o ADR-003 para refletir a integração direta, ou tratar como desvio a corrigir.
 
