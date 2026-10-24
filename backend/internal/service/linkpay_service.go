@@ -44,6 +44,10 @@ type LinkPayRepoInterface interface {
 	// BKL-1515: commission ledger
 	InsertCommissionEntry(ctx context.Context, entry *domain.CommissionEntry) error
 	GetCommissionSummary(ctx context.Context, startDate, endDate string) (*domain.CommissionSummaryResponse, error)
+	// LGPD Art. 18 — direitos do titular (comprador)
+	ListPurchasesByEmail(ctx context.Context, email string) ([]domain.BuyerPurchaseExport, error)
+	ErasePurchasesByEmail(ctx context.Context, email string) (int64, error)
+	ErasePurchasesOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
 }
 
 // EmailSender é a interface mínima para envio de email de confirmação de compra.

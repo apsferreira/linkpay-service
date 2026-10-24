@@ -35,6 +35,17 @@ spec:
                 name: linkpay-config
             - secretRef:
                 name: linkpay-secrets
+          env:
+            # LGPD Art. 46: chave AES-256-GCM para cifrar dados pessoais (CPF).
+            # Adicionar `encryption-key` no Vault (secret/linkpay-service). Sem a
+            # chave o serviço segue funcionando e simplesmente NÃO persiste CPFs
+            # (nunca em plaintext) — optional:true evita crash de deploy.
+            - name: ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: linkpay-secrets
+                  key: encryption-key
+                  optional: true
           readinessProbe:
             httpGet:
               path: /health

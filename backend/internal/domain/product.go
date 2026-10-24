@@ -74,7 +74,9 @@ type DigitalPurchase struct {
 	TenantID         string     `json:"tenant_id"                 db:"tenant_id"`
 	CustomerEmail    string     `json:"customer_email"            db:"customer_email"`
 	CustomerName     string     `json:"customer_name"             db:"customer_name"`
-	CustomerCPF      string     `json:"customer_cpf,omitempty"    db:"customer_cpf"`
+	// CustomerCPF é write-only: nunca serializado em respostas da API
+	// (minimização — LGPD Art. 6º, III) e cifrado em repouso (Art. 46).
+	CustomerCPF      string     `json:"-"                         db:"customer_cpf"`
 	AmountCents      int        `json:"amount_cents"              db:"amount_cents"`
 	PlatformFeeCents int        `json:"platform_fee_cents"        db:"platform_fee_cents"`
 	CreatorEarnings  int        `json:"creator_earnings_cents"    db:"creator_earnings_cents"`
@@ -117,7 +119,9 @@ type DigitalSubscription struct {
 	TenantID            string     `json:"tenant_id"`
 	CustomerEmail       string     `json:"customer_email"`
 	CustomerName        string     `json:"customer_name"`
-	CustomerCPF         string     `json:"customer_cpf,omitempty"`
+	// CustomerCPF é write-only: nunca serializado em respostas da API
+	// (minimização — LGPD Art. 6º, III) e cifrado em repouso (Art. 46).
+	CustomerCPF         string     `json:"-"`
 	AsaasSubscriptionID string     `json:"asaas_subscription_id,omitempty"`
 	AsaasCustomerID     string     `json:"asaas_customer_id,omitempty"`
 	Status              string     `json:"status"`

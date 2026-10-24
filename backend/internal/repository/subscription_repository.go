@@ -27,6 +27,11 @@ type SubscriptionRepoInterface interface {
 	CancelSubscription(ctx context.Context, id string) error
 	ListSubscriptionsByTenant(ctx context.Context, tenantID string) ([]domain.DigitalSubscription, error)
 	UpdateSubscriptionAsaasID(ctx context.Context, id, asaasID string) error
+
+	// LGPD Art. 18 — direitos do titular (assinante)
+	ListSubscriptionsByEmail(ctx context.Context, email string) ([]domain.BuyerSubscriptionExport, error)
+	EraseSubscriptionsByEmail(ctx context.Context, email string) (int64, error)
+	EraseSubscriptionsOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
 }
 
 // SubscriptionRepository implementa SubscriptionRepoInterface usando PostgreSQL.
@@ -149,6 +154,7 @@ func (r *SubscriptionRepository) DeactivatePlan(ctx context.Context, planID, ten
 // --- Assinaturas ---
 
 // CreateSubscription insere um novo registro de assinatura.
+// LGPD Art. 46: o CPF é cifrado (AES-256-GCM) antes de persistir.
 func (r *SubscriptionRepository) CreateSubscription(ctx context.Context, sub *domain.DigitalSubscription) error {
 	query := `
 		INSERT INTO digital_subscriptions
@@ -162,7 +168,7 @@ func (r *SubscriptionRepository) CreateSubscription(ctx context.Context, sub *do
 		asaasSubID = sub.AsaasSubscriptionID
 	}
 	_, err := r.db.Exec(ctx, query,
-		sub.ID, sub.PlanID, sub.TenantID, sub.CustomerEmail, sub.CustomerName, sub.CustomerCPF,
+		sub.ID, sub.PlanID, sub.TenantID, sub.CustomerEmail, sub.CustomerName, encryptCPF(sub.CustomerCPF, sub.ID),
 		asaasSubID, sub.AsaasCustomerID, sub.Status,
 		sub.CurrentPeriodStart, sub.CurrentPeriodEnd, sub.AccessToken,
 		sub.CreatedAt, sub.UpdatedAt,
@@ -173,7 +179,7 @@ func (r *SubscriptionRepository) CreateSubscription(ctx context.Context, sub *do
 // GetSubscriptionByToken busca assinatura pelo access_token.
 func (r *SubscriptionRepository) GetSubscriptionByToken(ctx context.Context, token string) (*domain.DigitalSubscription, error) {
 	query := `
-		SELECT id, plan_id, tenant_id, customer_email, customer_name, COALESCE(customer_cpf,''),
+		SELECT id, plan_id, tenant_id, customer_email, customer_name,
 		       COALESCE(asaas_subscription_id,''), COALESCE(asaas_customer_id,''),
 		       status, current_period_start, current_period_end, cancelled_at, access_token, created_at, updated_at
 		FROM digital_subscriptions WHERE access_token = $1
@@ -185,7 +191,7 @@ func (r *SubscriptionRepository) GetSubscriptionByToken(ctx context.Context, tok
 // GetSubscriptionByAsaasID busca assinatura pelo asaas_subscription_id.
 func (r *SubscriptionRepository) GetSubscriptionByAsaasID(ctx context.Context, asaasID string) (*domain.DigitalSubscription, error) {
 	query := `
-		SELECT id, plan_id, tenant_id, customer_email, customer_name, COALESCE(customer_cpf,''),
+		SELECT id, plan_id, tenant_id, customer_email, customer_name,
 		       COALESCE(asaas_subscription_id,''), COALESCE(asaas_customer_id,''),
 		       status, current_period_start, current_period_end, cancelled_at, access_token, created_at, updated_at
 		FROM digital_subscriptions WHERE asaas_subscription_id = $1
@@ -215,7 +221,7 @@ func (r *SubscriptionRepository) CancelSubscription(ctx context.Context, id stri
 // ListSubscriptionsByTenant lista assinaturas ativas de um tenant.
 func (r *SubscriptionRepository) ListSubscriptionsByTenant(ctx context.Context, tenantID string) ([]domain.DigitalSubscription, error) {
 	query := `
-		SELECT id, plan_id, tenant_id, customer_email, customer_name, COALESCE(customer_cpf,''),
+		SELECT id, plan_id, tenant_id, customer_email, customer_name,
 		       COALESCE(asaas_subscription_id,''), COALESCE(asaas_customer_id,''),
 		       status, current_period_start, current_period_end, cancelled_at, access_token, created_at, updated_at
 		FROM digital_subscriptions WHERE tenant_id = $1 ORDER BY created_at DESC
@@ -274,7 +280,7 @@ type subscriptionScanner interface {
 func scanSubscription(row subscriptionScanner) (*domain.DigitalSubscription, error) {
 	var s domain.DigitalSubscription
 	if err := row.Scan(
-		&s.ID, &s.PlanID, &s.TenantID, &s.CustomerEmail, &s.CustomerName, &s.CustomerCPF,
+		&s.ID, &s.PlanID, &s.TenantID, &s.CustomerEmail, &s.CustomerName,
 		&s.AsaasSubscriptionID, &s.AsaasCustomerID,
 		&s.Status, &s.CurrentPeriodStart, &s.CurrentPeriodEnd, &s.CancelledAt,
 		&s.AccessToken, &s.CreatedAt, &s.UpdatedAt,
@@ -282,4 +288,73 @@ func scanSubscription(row subscriptionScanner) (*domain.DigitalSubscription, err
 		return nil, fmt.Errorf("scanSubscription: %w", err)
 	}
 	return &s, nil
+}
+
+// --- LGPD Art. 18 — direitos do titular (assinante) ---
+
+// ListSubscriptionsByEmail retorna a projeção das assinaturas de um titular para
+// portabilidade (Art. 18, V). Não expõe tokens internos nem dados de terceiros.
+func (r *SubscriptionRepository) ListSubscriptionsByEmail(ctx context.Context, email string) ([]domain.BuyerSubscriptionExport, error) {
+	query := `
+		SELECT s.id, COALESCE(dp.id::text, ''), COALESCE(dp.name, ''), COALESCE(pl.name, ''),
+		       s.status, s.current_period_end, s.cancelled_at, s.created_at
+		FROM digital_subscriptions s
+		JOIN digital_subscription_plans pl ON pl.id = s.plan_id
+		LEFT JOIN digital_products dp ON dp.id = pl.product_id
+		WHERE LOWER(s.customer_email) = LOWER($1)
+		ORDER BY s.created_at DESC
+	`
+	rows, err := r.db.Query(ctx, query, email)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var subs []domain.BuyerSubscriptionExport
+	for rows.Next() {
+		var s domain.BuyerSubscriptionExport
+		if err := rows.Scan(
+			&s.ID, &s.ProductID, &s.ProductName, &s.PlanName,
+			&s.Status, &s.CurrentPeriodEnd, &s.CancelledAt, &s.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		subs = append(subs, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if subs == nil {
+		subs = []domain.BuyerSubscriptionExport{}
+	}
+	return subs, nil
+}
+
+// EraseSubscriptionsByEmail anonimiza os dados pessoais das assinaturas de um
+// titular (LGPD Art. 18, VI). O registro da assinatura é mantido (retenção fiscal,
+// Art. 16) sem PII.
+func (r *SubscriptionRepository) EraseSubscriptionsByEmail(ctx context.Context, email string) (int64, error) {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE digital_subscriptions
+		SET customer_email = NULL, customer_name = NULL, customer_cpf = NULL
+		WHERE LOWER(customer_email) = LOWER($1)
+	`, email)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
+// EraseSubscriptionsOlderThan anonimiza PII de assinaturas anteriores ao corte —
+// política de retenção de dados do comprador (LGPD Art. 16).
+func (r *SubscriptionRepository) EraseSubscriptionsOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE digital_subscriptions
+		SET customer_email = NULL, customer_name = NULL, customer_cpf = NULL
+		WHERE created_at < $1 AND customer_email IS NOT NULL
+	`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
 }

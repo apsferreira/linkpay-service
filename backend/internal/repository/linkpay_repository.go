@@ -3,12 +3,14 @@ package repository
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"linkpay-service/internal/domain"
+	"linkpay-service/internal/pkg/crypto"
 )
 
 // LinkPayRepository gerencia produtos digitais e compras LinkPay.
@@ -184,6 +186,7 @@ func (r *LinkPayRepository) UpdateProductCover(ctx context.Context, id, tenantID
 
 // CreatePurchase insere uma nova compra pendente.
 // BKL-603: inclui platform_fee_cents e creator_earnings_cents.
+// LGPD Art. 46: o CPF é cifrado (AES-256-GCM) antes de persistir.
 func (r *LinkPayRepository) CreatePurchase(ctx context.Context, p *domain.DigitalPurchase) error {
 	query := `
 		INSERT INTO digital_purchases
@@ -194,7 +197,7 @@ func (r *LinkPayRepository) CreatePurchase(ctx context.Context, p *domain.Digita
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 	`
 	_, err := r.db.Exec(ctx, query,
-		p.ID, p.ProductID, p.TenantID, p.CustomerEmail, p.CustomerName, p.CustomerCPF,
+		p.ID, p.ProductID, p.TenantID, p.CustomerEmail, p.CustomerName, encryptCPF(p.CustomerCPF, p.ID),
 		p.AmountCents, p.PlatformFeeCents, p.CreatorEarnings,
 		p.PaymentMethod, p.PaymentStatus, p.ExternalChargeID,
 		p.AccessToken, p.AccessExpiresAt, p.DownloadCount, p.CreatedAt,
@@ -206,7 +209,7 @@ func (r *LinkPayRepository) CreatePurchase(ctx context.Context, p *domain.Digita
 func (r *LinkPayRepository) GetPurchaseByToken(ctx context.Context, token string) (*domain.DigitalPurchase, error) {
 	query := `
 		SELECT id, product_id, tenant_id, customer_email, customer_name,
-		       COALESCE(customer_cpf, ''), amount_cents, platform_fee_cents, creator_earnings_cents, payment_method, payment_status,
+		       amount_cents, platform_fee_cents, creator_earnings_cents, payment_method, payment_status,
 		       COALESCE(external_charge_id, ''), COALESCE(access_token, ''),
 		       access_expires_at, download_count, created_at
 		FROM digital_purchases
@@ -220,7 +223,7 @@ func (r *LinkPayRepository) GetPurchaseByToken(ctx context.Context, token string
 func (r *LinkPayRepository) GetPurchaseByID(ctx context.Context, id string) (*domain.DigitalPurchase, error) {
 	query := `
 		SELECT id, product_id, tenant_id, customer_email, customer_name,
-		       COALESCE(customer_cpf, ''), amount_cents, platform_fee_cents, creator_earnings_cents, payment_method, payment_status,
+		       amount_cents, platform_fee_cents, creator_earnings_cents, payment_method, payment_status,
 		       COALESCE(external_charge_id, ''), COALESCE(access_token, ''),
 		       access_expires_at, download_count, created_at
 		FROM digital_purchases
@@ -234,7 +237,7 @@ func (r *LinkPayRepository) GetPurchaseByID(ctx context.Context, id string) (*do
 func (r *LinkPayRepository) GetPurchaseByChargeID(ctx context.Context, chargeID string) (*domain.DigitalPurchase, error) {
 	query := `
 		SELECT id, product_id, tenant_id, customer_email, customer_name,
-		       COALESCE(customer_cpf, ''), amount_cents, platform_fee_cents, creator_earnings_cents, payment_method, payment_status,
+		       amount_cents, platform_fee_cents, creator_earnings_cents, payment_method, payment_status,
 		       COALESCE(external_charge_id, ''), COALESCE(access_token, ''),
 		       access_expires_at, download_count, created_at
 		FROM digital_purchases
@@ -275,6 +278,77 @@ func (r *LinkPayRepository) IncrementDownload(ctx context.Context, token string)
 	`
 	_, err := r.db.Exec(ctx, query, token)
 	return err
+}
+
+// --- LGPD Art. 18 — direitos do titular (comprador) ---
+
+// ListPurchasesByEmail retorna a projeção das compras de um titular para
+// portabilidade (Art. 18, V). Não expõe tokens internos nem dados de terceiros.
+func (r *LinkPayRepository) ListPurchasesByEmail(ctx context.Context, email string) ([]domain.BuyerPurchaseExport, error) {
+	query := `
+		SELECT pu.id, pu.product_id, COALESCE(dp.name, ''),
+		       pu.amount_cents, pu.payment_method, pu.payment_status,
+		       pu.download_count, pu.created_at
+		FROM digital_purchases pu
+		LEFT JOIN digital_products dp ON dp.id = pu.product_id
+		WHERE LOWER(pu.customer_email) = LOWER($1)
+		ORDER BY pu.created_at DESC
+	`
+	rows, err := r.db.Query(ctx, query, email)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var purchases []domain.BuyerPurchaseExport
+	for rows.Next() {
+		var p domain.BuyerPurchaseExport
+		if err := rows.Scan(
+			&p.ID, &p.ProductID, &p.ProductName,
+			&p.AmountCents, &p.PaymentMethod, &p.PaymentStatus,
+			&p.DownloadCount, &p.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		purchases = append(purchases, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if purchases == nil {
+		purchases = []domain.BuyerPurchaseExport{}
+	}
+	return purchases, nil
+}
+
+// ErasePurchasesByEmail anonimiza os dados pessoais das compras de um titular
+// (LGPD Art. 18, VI). Os registros financeiros são mantidos — retenção fiscal
+// (Art. 16) e FKs de commission_ledger/payouts referenciam digital_purchases.
+func (r *LinkPayRepository) ErasePurchasesByEmail(ctx context.Context, email string) (int64, error) {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE digital_purchases
+		SET customer_email = NULL, customer_name = NULL, customer_cpf = NULL
+		WHERE LOWER(customer_email) = LOWER($1)
+	`, email)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
+// ErasePurchasesOlderThan anonimiza PII de compras anteriores ao corte — política
+// de retenção de dados do comprador (LGPD Art. 16): mantém apenas o registro
+// financeiro/auditoria após o TTL definido em domain.BuyerDataRetentionYears.
+func (r *LinkPayRepository) ErasePurchasesOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE digital_purchases
+		SET customer_email = NULL, customer_name = NULL, customer_cpf = NULL
+		WHERE created_at < $1 AND customer_email IS NOT NULL
+	`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
 }
 
 // GetSalesStats retorna métricas de vendas dos últimos N dias para um tenant.
@@ -571,7 +645,7 @@ func scanPurchase(row scanner) (*domain.DigitalPurchase, error) {
 	var p domain.DigitalPurchase
 	err := row.Scan(
 		&p.ID, &p.ProductID, &p.TenantID, &p.CustomerEmail, &p.CustomerName,
-		&p.CustomerCPF, &p.AmountCents, &p.PlatformFeeCents, &p.CreatorEarnings,
+		&p.AmountCents, &p.PlatformFeeCents, &p.CreatorEarnings,
 		&p.PaymentMethod, &p.PaymentStatus,
 		&p.ExternalChargeID, &p.AccessToken, &p.AccessExpiresAt,
 		&p.DownloadCount, &p.CreatedAt,
@@ -583,4 +657,21 @@ func scanPurchase(row scanner) (*domain.DigitalPurchase, error) {
 		return nil, err
 	}
 	return &p, nil
+}
+
+// encryptCPF cifra o CPF com AES-256-GCM (LGPD Art. 46) antes da persistência.
+// Retorna nil quando o titular não forneceu CPF ou quando ENCRYPTION_KEY não está
+// configurada — nesse caso o CPF NÃO é persistido (nunca em plaintext), espelhando
+// o comportamento fail-safe do customer-service. recordID identifica o registro no
+// log (nunca logar o próprio CPF).
+func encryptCPF(cpf, recordID string) *string {
+	if cpf == "" {
+		return nil
+	}
+	enc, err := crypto.Encrypt(cpf)
+	if err != nil {
+		log.Printf("[crypto] aviso: CPF não persistido (LGPD: nunca plaintext) record=%s: %v", recordID, err)
+		return nil
+	}
+	return &enc
 }
