@@ -42,6 +42,7 @@ make dev
 | `ASAAS_API_KEY` | Sim | Chave API Asaas |
 | `ASAAS_BASE_URL` | Sim | Base URL Asaas (`https://sandbox.asaas.com/api/v3` em homolog) |
 | `ASAAS_WEBHOOK_SECRET` | Sim | Secret para validar webhooks Asaas |
+| `ASAAS_WEBHOOK_MAX_AGE_SECONDS` | Não | Janela (s) do timestamp do webhook Asaas p/ anti-replay (default: `300` = 5 min) |
 | `MINIO_ENDPOINT` | Sim | Endpoint MinIO |
 | `MINIO_ACCESS_KEY` | Sim | Access key MinIO |
 | `MINIO_SECRET_KEY` | Sim | Secret key MinIO |

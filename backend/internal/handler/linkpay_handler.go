@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/go-playground/validator/v10"
@@ -54,26 +55,28 @@ type LinkPayServiceInterface interface {
 
 // LinkPayHandler gerencia os endpoints do módulo LinkPay.
 type LinkPayHandler struct {
-	service         LinkPayServiceInterface
-	payoutService   PayoutServiceInterface
-	subscriptionSvc SubscriptionServiceInterface // BKL-1208: webhook de assinaturas
-	cartClient      *client.CartClient            // BKL-1221: upsell via cart-service
-	validator       *validator.Validate
-	webhookSecret   string // VUL-001: secret para validar asaas-access-token no webhook
-	minioClient     *storage.MinIOClient
-	pulseClient     *pulse.Client // BKL-1252: tracking fire-and-forget
-	redisClient     *redis.Client // #8: idempotência de webhook via SetNX
+	service              LinkPayServiceInterface
+	payoutService        PayoutServiceInterface
+	subscriptionSvc      SubscriptionServiceInterface // BKL-1208: webhook de assinaturas
+	cartClient           *client.CartClient           // BKL-1221: upsell via cart-service
+	validator            *validator.Validate
+	webhookSecret        string // VUL-001: secret para validar asaas-access-token no webhook
+	webhookMaxAgeSeconds int64  // #10: janela de replay p/ timestamp do Asaas (env ASAAS_WEBHOOK_MAX_AGE_SECONDS, padrão 300s)
+	minioClient          *storage.MinIOClient
+	pulseClient          *pulse.Client // BKL-1252: tracking fire-and-forget
+	redisClient          *redis.Client // #8: idempotência de webhook via SetNX
 }
 
 func NewLinkPayHandler(service LinkPayServiceInterface, webhookSecret string, minioClient *storage.MinIOClient, pulseClient *pulse.Client) *LinkPayHandler {
 	return &LinkPayHandler{
-		service:       service,
-		validator:     validator.New(),
-		webhookSecret: webhookSecret,
-		minioClient:   minioClient,
-		cartClient:    client.NewCartClient(), // BKL-1221: lê CART_SERVICE_URL e SERVICE_TOKEN do env
-		pulseClient:   pulseClient,
-		redisClient:   newWebhookRedisClient(), // #8: idempotência de webhook
+		service:              service,
+		validator:            validator.New(),
+		webhookSecret:        webhookSecret,
+		webhookMaxAgeSeconds: webhookMaxAgeSecondsFromEnv(), // #10: janela de replay configurável via env
+		minioClient:          minioClient,
+		cartClient:           client.NewCartClient(), // BKL-1221: lê CART_SERVICE_URL e SERVICE_TOKEN do env
+		pulseClient:          pulseClient,
+		redisClient:          newWebhookRedisClient(), // #8: idempotência de webhook
 	}
 }
 
@@ -319,11 +322,11 @@ func (h *LinkPayHandler) UploadProductFile(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{
-		"uploaded":         true,
-		"file_name":        file.Filename,
-		"file_size_bytes":  file.Size,
-		"mime_type":        mimeType,
-		"storage_key":      storageKey,
+		"uploaded":        true,
+		"file_name":       file.Filename,
+		"file_size_bytes": file.Size,
+		"mime_type":       mimeType,
+		"storage_key":     storageKey,
 	})
 }
 
@@ -531,13 +534,35 @@ func (h *LinkPayHandler) setWebhookRedisClient(client *redis.Client) {
 	h.redisClient = client
 }
 
-// validateLinkPayWebhook valida o header asaas-access-token usando comparação constant-time.
+// webhookMaxAgeSecondsFromEnv retorna a janela (em segundos) para validar o
+// timestamp do webhook Asaas (#10). Lê ASAAS_WEBHOOK_MAX_AGE_SECONDS; padrão: 300s (5 min).
+// Valores ausentes ou inválidos caem para o padrão — nunca desabilitam a checagem.
+func webhookMaxAgeSecondsFromEnv() int64 {
+	const defaultWebhookMaxAgeSeconds int64 = 300
+	raw := os.Getenv("ASAAS_WEBHOOK_MAX_AGE_SECONDS")
+	if raw == "" {
+		return defaultWebhookMaxAgeSeconds
+	}
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || n <= 0 {
+		log.Printf("[linkpay] WARN: ASAAS_WEBHOOK_MAX_AGE_SECONDS inválido (%q) — usando padrão %ds", raw, defaultWebhookMaxAgeSeconds)
+		return defaultWebhookMaxAgeSeconds
+	}
+	return n
+}
+
+// validateLinkPayWebhook valida o header asaas-access-token usando comparação constant-time
+// e o timestamp do Asaas para prevenir replay (#10).
 // VUL-001: sem validação qualquer requisição poderia acionar ProcessPaymentConfirmed.
-func (h *LinkPayHandler) validateLinkPayWebhook(rawBody []byte, token string) bool {
-	if h.webhookSecret == "" || token == "" {
+// O token Asaas é fixo (não é assinatura HMAC do corpo), então a janela de timestamp
+// limita a janela de replay de uma requisição capturada com o token válido.
+func (h *LinkPayHandler) validateLinkPayWebhook(rawBody []byte, token, timestamp string) bool {
+	if h.webhookSecret == "" || token == "" || len(rawBody) == 0 {
 		return false
 	}
-	if len(rawBody) == 0 {
+	// #10: timestamp Unix (segundos) deve estar dentro da janela configurável.
+	ts, err := strconv.ParseInt(timestamp, 10, 64)
+	if err != nil || time.Now().Unix()-ts > h.webhookMaxAgeSeconds {
 		return false
 	}
 	return hmac.Equal([]byte(h.webhookSecret), []byte(token))
@@ -566,9 +591,17 @@ func (h *LinkPayHandler) HandleWebhook(c *fiber.Ctx) error {
 	if authToken == "" {
 		authToken = c.Query("access_token")
 	}
+	// #10: replay protection — timestamp Unix (segundos) enviado pelo Asaas no webhook.
+	timestamp := c.Get("asaas-timestamp")
+	if timestamp == "" {
+		timestamp = c.Get("timestamp")
+	}
+	if timestamp == "" {
+		timestamp = c.Query("timestamp")
+	}
 
-	if !h.validateLinkPayWebhook(rawBody, authToken) {
-		log.Printf("[linkpay][SECURITY] webhook rejeitado: token inválido | IP: %s", c.IP())
+	if !h.validateLinkPayWebhook(rawBody, authToken, timestamp) {
+		log.Printf("[linkpay][SECURITY] webhook rejeitado: token/timestamp inválido | IP: %s", c.IP())
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "token inválido"})
 	}
 

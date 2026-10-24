@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gofiber/fiber/v2"
@@ -74,7 +76,7 @@ func (m *mockWebhookService) GetUpsellsByProductID(_ context.Context, _ string) 
 	return nil, nil
 }
 func (m *mockWebhookService) UpdateProductCover(_ context.Context, _, _, _ string) error { return nil }
-func (m *mockWebhookService) RefundPurchase(_ context.Context, _, _ string) error            { return nil }
+func (m *mockWebhookService) RefundPurchase(_ context.Context, _, _ string) error        { return nil }
 func (m *mockWebhookService) GetCommissionSummary(_ context.Context, _, _ string) (*domain.CommissionSummaryResponse, error) {
 	return &domain.CommissionSummaryResponse{}, nil
 }
@@ -103,6 +105,7 @@ func TestHandleWebhook_IdempotenciaRedis(t *testing.T) {
 	req1 := httptest.NewRequest("POST", "/webhook", strings.NewReader(payload))
 	req1.Header.Set("Content-Type", "application/json")
 	req1.Header.Set("asaas-access-token", "secret123")
+	req1.Header.Set("asaas-timestamp", strconv.FormatInt(time.Now().Unix(), 10))
 
 	resp1, err := app.Test(req1, -1)
 	if err != nil {
@@ -120,6 +123,7 @@ func TestHandleWebhook_IdempotenciaRedis(t *testing.T) {
 	req2 := httptest.NewRequest("POST", "/webhook", strings.NewReader(payload))
 	req2.Header.Set("Content-Type", "application/json")
 	req2.Header.Set("asaas-access-token", "secret123")
+	req2.Header.Set("asaas-timestamp", strconv.FormatInt(time.Now().Unix(), 10))
 
 	resp2, err := app.Test(req2, -1)
 	if err != nil {
@@ -165,6 +169,7 @@ func TestHandleWebhook_IdempotenciaChargeDiferente(t *testing.T) {
 	req1 := httptest.NewRequest("POST", "/webhook", strings.NewReader(payload1))
 	req1.Header.Set("Content-Type", "application/json")
 	req1.Header.Set("asaas-access-token", "secret123")
+	req1.Header.Set("asaas-timestamp", strconv.FormatInt(time.Now().Unix(), 10))
 	resp1, _ := app.Test(req1, -1)
 	if resp1.StatusCode != fiber.StatusOK {
 		t.Errorf("primeira chamada: status=%d", resp1.StatusCode)
@@ -175,6 +180,7 @@ func TestHandleWebhook_IdempotenciaChargeDiferente(t *testing.T) {
 	req2 := httptest.NewRequest("POST", "/webhook", strings.NewReader(payload2))
 	req2.Header.Set("Content-Type", "application/json")
 	req2.Header.Set("asaas-access-token", "secret123")
+	req2.Header.Set("asaas-timestamp", strconv.FormatInt(time.Now().Unix(), 10))
 	resp2, _ := app.Test(req2, -1)
 	if resp2.StatusCode != fiber.StatusOK {
 		t.Errorf("segunda chamada (charge diferente): status=%d", resp2.StatusCode)
@@ -201,6 +207,7 @@ func TestHandleWebhook_IdempotenciaSemRedis(t *testing.T) {
 		req := httptest.NewRequest("POST", "/webhook", strings.NewReader(payload))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("asaas-access-token", "secret123")
+		req.Header.Set("asaas-timestamp", strconv.FormatInt(time.Now().Unix(), 10))
 		resp, _ := app.Test(req, -1)
 		if resp.StatusCode != fiber.StatusOK {
 			t.Errorf("chamada %d: status=%d", i+1, resp.StatusCode)
@@ -234,6 +241,7 @@ func TestHandleWebhook_IdempotenciaTTL(t *testing.T) {
 	req := httptest.NewRequest("POST", "/webhook", strings.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("asaas-access-token", "secret123")
+	req.Header.Set("asaas-timestamp", strconv.FormatInt(time.Now().Unix(), 10))
 	_, _ = app.Test(req, -1)
 
 	// Verifica TTL da chave no Redis
@@ -244,5 +252,110 @@ func TestHandleWebhook_IdempotenciaTTL(t *testing.T) {
 	expected := 7 * 24 * 60 * 60 // 7 dias em segundos
 	if ttl.Seconds() < float64(expected-10) || ttl.Seconds() > float64(expected+10) {
 		t.Errorf("TTL = %v, esperado ~%d segundos (7 dias)", ttl, expected)
+	}
+}
+
+// --- #10: validação de timestamp do webhook Asaas (replay protection) ---
+
+func newValidationHandler(secret string, maxAgeSeconds int64) *LinkPayHandler {
+	return &LinkPayHandler{webhookSecret: secret, webhookMaxAgeSeconds: maxAgeSeconds}
+}
+
+func unixNow(t *testing.T) string {
+	t.Helper()
+	return strconv.FormatInt(time.Now().Unix(), 10)
+}
+
+// Token válido + timestamp recente (dentro da janela de 5 min) → aceito.
+func TestValidateLinkPayWebhook_TokenValidoRecente_Aceita(t *testing.T) {
+	h := newValidationHandler("secret123", 300)
+	body := []byte(`{"event":"PAYMENT_CONFIRMED","payment":{"id":"charge-x"}}`)
+	if !h.validateLinkPayWebhook(body, "secret123", unixNow(t)) {
+		t.Error("webhook com token válido e timestamp recente deveria ser aceito")
+	}
+}
+
+// Token válido mas timestamp expirado (fora da janela de 5 min) → rejeitado (replay).
+func TestValidateLinkPayWebhook_TokenValidoExpirado_Rejeita(t *testing.T) {
+	h := newValidationHandler("secret123", 300)
+	body := []byte(`{"event":"PAYMENT_CONFIRMED","payment":{"id":"charge-x"}}`)
+	old := strconv.FormatInt(time.Now().Unix()-301, 10) // 5min1s atrás
+	if h.validateLinkPayWebhook(body, "secret123", old) {
+		t.Error("webhook com timestamp expirado (replay) deveria ser rejeitado")
+	}
+}
+
+// Token inválido + timestamp recente → rejeitado.
+func TestValidateLinkPayWebhook_TokenInvalido_Rejeita(t *testing.T) {
+	h := newValidationHandler("secret123", 300)
+	body := []byte(`{"event":"PAYMENT_CONFIRMED","payment":{"id":"charge-x"}}`)
+	if h.validateLinkPayWebhook(body, "token-errado", unixNow(t)) {
+		t.Error("webhook com token inválido deveria ser rejeitado")
+	}
+}
+
+// Timestamp ausente ou não-numérico → rejeitado (fail-closed).
+func TestValidateLinkPayWebhook_TimestampAusenteOuInvalido_Rejeita(t *testing.T) {
+	h := newValidationHandler("secret123", 300)
+	body := []byte(`{"event":"PAYMENT_CONFIRMED","payment":{"id":"charge-x"}}`)
+	for _, ts := range []string{"", "abc", "12.5"} {
+		if h.validateLinkPayWebhook(body, "secret123", ts) {
+			t.Errorf("timestamp %q deveria ser rejeitado", ts)
+		}
+	}
+}
+
+// Secret vazio ou body vazio → rejeitado.
+func TestValidateLinkPayWebhook_SecretOuBodyVazio_Rejeita(t *testing.T) {
+	h := newValidationHandler("secret123", 300)
+	if h.validateLinkPayWebhook([]byte(`{}`), "", unixNow(t)) {
+		t.Error("token vazio deveria ser rejeitado")
+	}
+	empty := &LinkPayHandler{webhookSecret: "", webhookMaxAgeSeconds: 300}
+	if empty.validateLinkPayWebhook([]byte(`{}`), "x", unixNow(t)) {
+		t.Error("secret vazio deveria ser rejeitado")
+	}
+	if h.validateLinkPayWebhook(nil, "secret123", unixNow(t)) {
+		t.Error("body vazio deveria ser rejeitado")
+	}
+}
+
+// Janela configurável via env ASAAS_WEBHOOK_MAX_AGE_SECONDS (lida no construtor).
+func TestNewLinkPayHandler_WebhookMaxAge_ConfiguravelViaEnv(t *testing.T) {
+	svc := &mockWebhookService{}
+	withEnv := func(t *testing.T, value string) int64 {
+		t.Helper()
+		t.Setenv("ASAAS_WEBHOOK_MAX_AGE_SECONDS", value)
+		return NewLinkPayHandler(svc, "secret123", &storage.MinIOClient{}, pulse.New()).webhookMaxAgeSeconds
+	}
+
+	if got := withEnv(t, ""); got != 300 {
+		t.Errorf("default ASAAS_WEBHOOK_MAX_AGE_SECONDS = %d, esperado 300", got)
+	}
+	if got := withEnv(t, "60"); got != 60 {
+		t.Errorf("ASAAS_WEBHOOK_MAX_AGE_SECONDS=60 → janela %d, esperado 60", got)
+	}
+	if got := withEnv(t, "0"); got != 300 {
+		t.Errorf("ASAAS_WEBHOOK_MAX_AGE_SECONDS=0 → janela %d, esperado default 300", got)
+	}
+	if got := withEnv(t, "abc"); got != 300 {
+		t.Errorf("ASAAS_WEBHOOK_MAX_AGE_SECONDS=abc → janela %d, esperado default 300", got)
+	}
+}
+
+// A janela configurada por env é aplicada na validação (60s: 30s aceito, 90s rejeitado).
+func TestValidateLinkPayWebhook_JanelaCustomizadaPorEnv(t *testing.T) {
+	t.Setenv("ASAAS_WEBHOOK_MAX_AGE_SECONDS", "60")
+	svc := &mockWebhookService{}
+	h := NewLinkPayHandler(svc, "secret123", &storage.MinIOClient{}, pulse.New())
+	body := []byte(`{"event":"PAYMENT_CONFIRMED","payment":{"id":"charge-x"}}`)
+
+	recent := strconv.FormatInt(time.Now().Unix()-30, 10)
+	if !h.validateLinkPayWebhook(body, "secret123", recent) {
+		t.Error("timestamp de 30s atrás deveria ser aceito com janela de 60s")
+	}
+	expired := strconv.FormatInt(time.Now().Unix()-90, 10)
+	if h.validateLinkPayWebhook(body, "secret123", expired) {
+		t.Error("timestamp de 90s atrás deveria ser rejeitado com janela de 60s")
 	}
 }

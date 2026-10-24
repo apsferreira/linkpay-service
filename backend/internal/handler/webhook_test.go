@@ -7,8 +7,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 
@@ -20,10 +22,10 @@ import (
 // ─── mock: LinkPayServiceInterface (apenas os métodos usados em HandleWebhook) ─
 
 type fakeLinkPayService struct {
-	processCalls           int32
-	processChargeIDs       []string
+	processCalls            int32
+	processChargeIDs        []string
 	processReturnIdempotent bool // se true, nenhum efeito (compra já confirmada)
-	processErr             error
+	processErr              error
 }
 
 func (f *fakeLinkPayService) ProcessPaymentConfirmed(_ context.Context, chargeID string) error {
@@ -86,10 +88,10 @@ func (f *fakeLinkPayService) GetCommissionSummary(context.Context, string, strin
 // ─── mock: PayoutServiceInterface ───────────────────────────────────────────
 
 type fakePayoutService struct {
-	transferCalls   int32
-	transferEvents  []string
-	transferIDs     []string
-	transferReturn  error
+	transferCalls  int32
+	transferEvents []string
+	transferIDs    []string
+	transferReturn error
 }
 
 func (f *fakePayoutService) GetBalance(context.Context, string) (*domain.Balance, error) {
@@ -136,6 +138,8 @@ func postJSON(t *testing.T, app *fiber.App, body any, token string) *http.Respon
 	if token != "" {
 		req.Header.Set("asaas-access-token", token)
 	}
+	// #10: webhook exige timestamp recente — helper envia sempre um timestamp atual.
+	req.Header.Set("asaas-timestamp", strconv.FormatInt(time.Now().Unix(), 10))
 	resp, err := app.Test(req, -1)
 	if err != nil {
 		t.Fatalf("erro ao executar request: %v", err)
@@ -236,6 +240,7 @@ func TestWebhook_PayloadInvalido_RetornaBadRequest(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader([]byte("{not-json")))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("asaas-access-token", testWebhookSecret)
+	req.Header.Set("asaas-timestamp", strconv.FormatInt(time.Now().Unix(), 10))
 
 	resp, err := app.Test(req, -1)
 	if err != nil {
@@ -243,6 +248,61 @@ func TestWebhook_PayloadInvalido_RetornaBadRequest(t *testing.T) {
 	}
 	if resp.StatusCode != fiber.StatusBadRequest {
 		t.Errorf("status = %d, queria 400", resp.StatusCode)
+	}
+}
+
+// #10: replay attack — token válido porém timestamp antigo (fora da janela de 5 min)
+// deve ser rejeitado com 401 e sem chamar o service.
+func TestWebhook_TimestampExpirado_RejeitaReplay(t *testing.T) {
+	svc := &fakeLinkPayService{}
+	app := newWebhookApp(svc, nil)
+
+	body := map[string]any{
+		"event":   "PAYMENT_CONFIRMED",
+		"payment": map[string]any{"id": "pay_replay"},
+	}
+	raw, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("asaas-access-token", testWebhookSecret)
+	req.Header.Set("asaas-timestamp", strconv.FormatInt(time.Now().Unix()-3600, 10)) // 1h atrás
+
+	resp, err := app.Test(req, -1)
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusUnauthorized {
+		t.Errorf("status = %d, queria 401 para replay com timestamp expirado", resp.StatusCode)
+	}
+	if atomic.LoadInt32(&svc.processCalls) != 0 {
+		t.Errorf("ProcessPaymentConfirmed não deveria ser chamado em replay expirado")
+	}
+}
+
+// #10: timestamp ausente — falha fechada (fail-closed): 401, service não é chamado.
+func TestWebhook_TimestampAusente_Rejeita(t *testing.T) {
+	svc := &fakeLinkPayService{}
+	app := newWebhookApp(svc, nil)
+
+	body := map[string]any{
+		"event":   "PAYMENT_CONFIRMED",
+		"payment": map[string]any{"id": "pay_no_ts"},
+	}
+	raw, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("asaas-access-token", testWebhookSecret)
+	// sem header asaas-timestamp
+
+	resp, err := app.Test(req, -1)
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusUnauthorized {
+		t.Errorf("status = %d, queria 401 para timestamp ausente", resp.StatusCode)
+	}
+	if atomic.LoadInt32(&svc.processCalls) != 0 {
+		t.Errorf("ProcessPaymentConfirmed não deveria ser chamado sem timestamp")
 	}
 }
 
