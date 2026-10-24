@@ -4,3 +4,5 @@ bin/
 *.test
 vendor/
 .DS_Store
+coverage.out
+*.coverprofile
