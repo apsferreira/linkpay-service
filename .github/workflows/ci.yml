@@ -49,20 +49,22 @@ jobs:
         working-directory: ./backend
 
       - name: Run tests
+        continue-on-error: false
         env:
           GOTOOLCHAIN: auto
           DATABASE_URL: postgres://postgres:***@localhost:5432/linkpay_test?sslmode=disable
-        run: go test ./... -timeout 60s -coverprofile=/tmp/coverage.out -coverpkg=./internal/...
+        run: go test ./... -timeout 300s -cover -coverprofile=coverage.out -coverpkg=./internal/...,./pkg/...
         working-directory: ./backend
 
-      - name: Check coverage >= 60%
+      - name: Check coverage >= 80%
+        continue-on-error: false
         env:
           GOTOOLCHAIN: auto
         run: |
-          COVERAGE=$(go tool cover -func=/tmp/coverage.out | grep '^total:' | awk '{print $3}' | tr -d '%')
+          COVERAGE=$(go tool cover -func=coverage.out | grep '^total:' | awk '{print $3}' | tr -d '%')
           echo "Coverage: ${COVERAGE}%"
-          if [ "$(echo "${COVERAGE} < 60" | bc)" = "1" ]; then
-            echo "❌ Coverage ${COVERAGE}% is below 60% threshold"
+          if [ "$(echo "${COVERAGE} < 80" | bc)" = "1" ]; then
+            echo "❌ Coverage ${COVERAGE}% is below 80% threshold"
             exit 1
           fi
           echo "✅ Coverage ${COVERAGE}% meets threshold"
